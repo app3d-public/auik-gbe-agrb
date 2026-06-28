@@ -1,0 +1,9 @@
+[submodule "cmake"]
+	path = cmake
+	url = git@git.dev.lan:app3d/acbt.git
+[submodule "modules/auik"]
+	path = modules/auik
+	url = git@git.dev.lan:app3d/auik
+[submodule "modules/agrb"]
+	path = modules/agrb
+	url = git@git.dev.lan:app3d/agrb

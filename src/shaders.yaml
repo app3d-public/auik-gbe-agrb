@@ -1,0 +1,26 @@
+auik:
+  quads:
+    id: 0x94C21750
+    stages:
+      - vs: "quads/quads.vert"
+      - fs: "quads/quads.frag"
+  textures:
+    id: 0x1B6FF1C9
+    stages:
+      - vs: "textures/textures.vert"
+      - fs: "textures/textures.frag"
+  vertex_stream:
+    id: 0x6A4B3F12
+    stages:
+      - vs: "vertex/vertex.vert"
+      - fs: "vertex/vertex.frag"
+  textured_vertex_stream:
+    id: 0x7C5D8E21
+    stages:
+      - vs: "vertex/textured_vertex.vert"
+      - fs: "vertex/textured_vertex.frag"
+  picker:
+    id: 0xE6B1C4A2
+    stages:
+      - vs: "picker/picker.vert"
+      - fs: "picker/picker.frag"
