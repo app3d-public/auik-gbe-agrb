@@ -1,6 +1,6 @@
 # Auik Agrb GPU Backend
 
-`auik-gbe-agrb` is the Agrb GPU backend for [Auik](../auik).
+`auik-gbe-agrb` is the Agrb GPU backend for [Auik](https://repos.homedatasrv.ru/app3d/auik).
 It connects Auik resources to the Agrb rendering layer.
 
 ## Features
@@ -50,10 +50,10 @@ Pass it to Auik through `auik::CreateInfo::set_gpu_backend()`.
 
 ## Dependencies
 
-- [auik](../auik)
-- [agrb](../agrb)
-- [acul](../acul)
-- [amal](../amal)
+- [auik](https://repos.homedatasrv.ru/app3d/auik)
+- [agrb](https://repos.homedatasrv.ru/app3d/agrb)
+- [acul](https://repos.homedatasrv.ru/app3d/acul)
+- [amal](https://repos.homedatasrv.ru/app3d/amal)
 
 ## License
 This project is licensed under the [MIT License](LICENSE).
