@@ -21,9 +21,12 @@ namespace auik::detail
     {
         agrb::vector<VertexStreamVertex> vertices;
         agrb::vector<VertexStreamIndex> indices;
+        agrb::vector<amal::vec2> offsets;
         acul::vector<VertexStreamBatchRange> batches;
         vk::DescriptorSet descriptor_set;
         vk::Buffer descriptor_buffer_clip_rects = nullptr;
+        vk::Buffer descriptor_buffer_offsets = nullptr;
+        bool descriptor_buffer_offsets_dirty = true;
     };
 
     static DrawDataID push_vertex_stream_batch(DrawStream *stream, const VertexStreamBatchData &batch, u32 frame_id)
@@ -32,16 +35,25 @@ namespace auik::detail
         if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0)) return draw_data_id;
 
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
+        const u32 batch_id = static_cast<u32>(gpu_data.batches.size());
         VertexStreamBatchRange range{};
         range.vertex_offset = static_cast<u32>(gpu_data.vertices.size());
         range.vertex_count = batch.vertex_count;
         range.index_offset = static_cast<u32>(gpu_data.indices.size());
         range.index_count = batch.index_count;
 
-        for (u32 i = 0; i < batch.vertex_count; ++i) gpu_data.vertices.push_back(batch.vertices[i]);
+        const auto offset_result = gpu_data.offsets.push_back(batch.offset);
+        if (offset_result & agrb::VectorResultBits::buffer_reallocated)
+            gpu_data.descriptor_buffer_offsets_dirty = true;
+        for (u32 i = 0; i < batch.vertex_count; ++i)
+        {
+            VertexStreamVertex vertex = batch.vertices[i];
+            vertex.batch_id = static_cast<f32>(batch_id);
+            gpu_data.vertices.push_back(vertex);
+        }
         for (u32 i = 0; i < batch.index_count; ++i) gpu_data.indices.push_back(batch.indices[i] + range.vertex_offset);
 
-        draw_data_id.render_id = static_cast<u32>(gpu_data.batches.size());
+        draw_data_id.render_id = batch_id;
         draw_data_id.hit_id = AUIK_INVALID_DRAW_DATA_ID;
         gpu_data.batches.push_back(range);
         ++stream->draw_sizes[frame_id];
@@ -65,13 +77,20 @@ namespace auik::detail
         }
     }
 
-    static void update_vertex_stream_batch(VertexStreamGPUData &gpu_data, const VertexStreamBatchRange &range,
+    static void update_vertex_stream_batch(VertexStreamGPUData &gpu_data, u32 batch_id, const VertexStreamBatchRange &range,
                                            const VertexStreamBatchData &batch)
     {
+        if (batch_id < gpu_data.offsets.size()) gpu_data.offsets[batch_id] = batch.offset;
+        if (!batch.vertices && !batch.indices && batch.vertex_count == 0u && batch.index_count == 0u) return;
         if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0)) return;
         if (range.vertex_count != batch.vertex_count || range.index_count != batch.index_count) return;
 
-        for (u32 i = 0; i < batch.vertex_count; ++i) gpu_data.vertices[range.vertex_offset + i] = batch.vertices[i];
+        for (u32 i = 0; i < batch.vertex_count; ++i)
+        {
+            VertexStreamVertex vertex = batch.vertices[i];
+            vertex.batch_id = static_cast<f32>(batch_id);
+            gpu_data.vertices[range.vertex_offset + i] = vertex;
+        }
         for (u32 i = 0; i < batch.index_count; ++i)
             gpu_data.indices[range.index_offset + i] = batch.indices[i] + range.vertex_offset;
     }
@@ -80,7 +99,7 @@ namespace auik::detail
     {
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
         if (draw_data_id.render_id >= gpu_data.batches.size()) return;
-        update_vertex_stream_batch(gpu_data, gpu_data.batches[draw_data_id.render_id],
+        update_vertex_stream_batch(gpu_data, draw_data_id.render_id, gpu_data.batches[draw_data_id.render_id],
                                    *static_cast<const VertexStreamBatchData *>(data));
     }
 
@@ -106,7 +125,7 @@ namespace auik::detail
         {
             const u32 render_id = draw_data_ids[i].render_id;
             if (render_id >= gpu_data.batches.size()) continue;
-            update_vertex_stream_batch(gpu_data, gpu_data.batches[render_id], batches[i]);
+            update_vertex_stream_batch(gpu_data, render_id, gpu_data.batches[render_id], batches[i]);
         }
     }
 
@@ -115,6 +134,7 @@ namespace auik::detail
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
         gpu_data.vertices.clear();
         gpu_data.indices.clear();
+        gpu_data.offsets.clear();
         gpu_data.batches.clear();
     }
 
@@ -127,8 +147,14 @@ namespace auik::detail
         auto &src = frames[src_frame_id];
         dst.vertices.clear();
         dst.indices.clear();
+        dst.offsets.clear();
         for (u32 i = 0; i < src.vertices.size(); ++i) dst.vertices.push_back(src.vertices[i]);
         for (u32 i = 0; i < src.indices.size(); ++i) dst.indices.push_back(src.indices[i]);
+        for (u32 i = 0; i < src.offsets.size(); ++i)
+        {
+            const auto result = dst.offsets.push_back(src.offsets[i]);
+            if (result & agrb::VectorResultBits::buffer_reallocated) dst.descriptor_buffer_offsets_dirty = true;
+        }
         dst.batches.clear();
         dst.batches.insert(dst.batches.end(), src.batches.begin(), src.batches.end());
         stream->draw_sizes[dst_frame_id] = stream->draw_sizes[src_frame_id];
@@ -142,6 +168,7 @@ namespace auik::detail
             auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[i];
             gpu_data.vertices.destroy();
             gpu_data.indices.destroy();
+            gpu_data.offsets.destroy();
             gpu_data.batches.clear();
         }
         acul::release(static_cast<VertexStreamGPUData *>(stream->stream_instances), count);
@@ -159,10 +186,15 @@ namespace auik::detail
             .required_flags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
             .buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer,
             .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
+        agrb::managed_buffer offset_buf{
+            .required_flags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+            .buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer,
+            .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
         for (u32 i = 0; i < instance_count; ++i)
         {
             data[i].vertices.init(device, vertex_buf);
             data[i].indices.init(device, index_buf);
+            data[i].offsets.init(device, offset_buf);
         }
         return data;
     }
@@ -177,15 +209,19 @@ namespace auik::detail
 
         const auto &clip_rects_data = ctx->clip_rects[frame_id].data();
         const vk::Buffer clip_rects_buffer = clip_rects_data.vk_buffer;
+        const vk::Buffer offsets_buffer = gpu_data.offsets.data().vk_buffer;
         const bool clip_rects_reallocated = ctx->clip_rects_reallocated && ctx->clip_rects_reallocated[frame_id];
-        if (!clip_rects_buffer) return false;
+        if (!clip_rects_buffer || !offsets_buffer) return false;
         if (gpu_data.descriptor_set && gpu_data.descriptor_buffer_clip_rects == clip_rects_buffer &&
-            !clip_rects_reallocated)
+            gpu_data.descriptor_buffer_offsets == offsets_buffer && !clip_rects_reallocated &&
+            !gpu_data.descriptor_buffer_offsets_dirty)
             return true;
 
         vk::DescriptorBufferInfo clip_rects_info{clip_rects_buffer, 0, VK_WHOLE_SIZE};
+        vk::DescriptorBufferInfo offsets_info{offsets_buffer, 0, VK_WHOLE_SIZE};
         agrb::descriptor_writer writer(*pipeline->descriptor_set_layout, *ctx->descriptor_pool);
         writer.write_buffer(0, &clip_rects_info);
+        writer.write_buffer(1, &offsets_info);
         if (!gpu_data.descriptor_set)
         {
             if (!writer.build(gpu_data.descriptor_set)) return false;
@@ -193,6 +229,8 @@ namespace auik::detail
         else writer.overwrite(gpu_data.descriptor_set);
 
         gpu_data.descriptor_buffer_clip_rects = clip_rects_buffer;
+        gpu_data.descriptor_buffer_offsets = offsets_buffer;
+        gpu_data.descriptor_buffer_offsets_dirty = false;
         return true;
     }
 
@@ -240,6 +278,7 @@ namespace auik
         pipeline.descriptor_set_layout =
             agrb::descriptor_set_layout::builder()
                 .add_binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
+                .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
                 .build(device);
         if (!pipeline.descriptor_set_layout) return false;
 
