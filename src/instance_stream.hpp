@@ -158,7 +158,7 @@ namespace auik::detail
                                                    vk::MemoryPropertyFlagBits::eHostCoherent,
                                  .buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer,
                                  .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
-        for (u32 i = 0; i < instance_count; i++) { data[i].draw_instances.init(device, buf); }
+        for (u32 i = 0; i < instance_count; i++) data[i].draw_instances.init(device, buf);
         return data;
     }
 

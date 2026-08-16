@@ -26,7 +26,7 @@ namespace auik::detail
         bool prepare(AgrbContext *context);
 
         void destroy(agrb::device &device);
-        bool construct_pipeline(agrb::device &device, DrawPipeline &pipeline);
+        bool construct_pipeline(agrb::device &device, DrawPipeline &pipeline, bool bind_pipeline = true);
         bool configure_pipeline(AgrbContext *ctx, agrb::graphics_pipeline_batch::artifact &, DrawPipeline &);
 
         void render(AgrbContext *ctx, vk::CommandBuffer *cmd);

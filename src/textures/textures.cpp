@@ -14,10 +14,8 @@ namespace auik::detail
         if (stream->draw_sizes[frame_id] == 0) return;
         auto *ctx = get_agrb_context(gpu_context);
         auto &gpu_data = static_cast<TexturesStream *>(stream->stream_instances)[frame_id];
-        if (!ctx->bindless_texture_set)
-            return;
-        if (!update_instance_descriptor_set(stream, gpu_data, gpu_context, frame_id))
-            return;
+        if (!ctx->bindless_texture_set) return;
+        if (!update_instance_descriptor_set(stream, gpu_data, gpu_context, frame_id)) return;
         auto *pipeline = stream->pipeline;
         auto &device = get_agrb_device(gpu_context);
         auto &cmd = *static_cast<vk::CommandBuffer *>(render_ctx);
@@ -97,7 +95,7 @@ namespace auik
 
         const auto &path = detail::get_shader_library_path();
         vk::ShaderModule shaders[2];
-        auto vs =ctx->shader_cache.get_shader(AS_AUIK_TEXTURES_VS, shaders[0], device, path);
+        auto vs = ctx->shader_cache.get_shader(AS_AUIK_TEXTURES_VS, shaders[0], device, path);
         if (!vs.success()) return false;
         auto fs = ctx->shader_cache.get_shader(AS_AUIK_TEXTURES_FS, shaders[1], device, path);
         if (!fs.success()) return false;

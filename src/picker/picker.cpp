@@ -304,10 +304,10 @@ namespace auik::detail
         return false;
     }
 
-    bool GPUPicker::construct_pipeline(agrb::device &device, DrawPipeline &pipeline)
+    bool GPUPicker::construct_pipeline(agrb::device &device, DrawPipeline &pipeline, bool bind_pipeline)
     {
         if (pipeline.layout) return true;
-        _pipeline = &pipeline;
+        if (bind_pipeline) _pipeline = &pipeline;
         if (!_descriptor_set_layout)
         {
             _descriptor_set_layout =

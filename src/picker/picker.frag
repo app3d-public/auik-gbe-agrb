@@ -33,10 +33,7 @@ void main()
         if (abs(dist) > AUIK_HITBOX_PAD) discard;
         out_value.y = uint(0xBF9B2277u);
     }
-    else
-    {
-        if (is_clipped(in_pixel_pos, clip_rects[clip_id])) discard;
-    }
+    else if (is_clipped(in_pixel_pos, clip_rects[clip_id])) discard;
 
     out_id = out_value;
 }

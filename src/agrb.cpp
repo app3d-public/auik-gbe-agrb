@@ -1,15 +1,17 @@
 #include <agrb/texture.hpp>
+#include <auik/detail/context.hpp>
+#include <auik/detail/gpu_context.hpp>
+#include <auik/draw.hpp>
 #include <auik/gbe/agrb/agrb.hpp>
+#include <auik/gbe/agrb/picker_pipeline.hpp>
 #include <auik/gbe/agrb/quads_pipeline.hpp>
 #include <auik/gbe/agrb/textured_vertex_pipeline.hpp>
 #include <auik/gbe/agrb/textures_pipeline.hpp>
 #include <auik/gbe/agrb/vertex_pipeline.hpp>
-#include <auik/detail/context.hpp>
-#include <auik/detail/gpu_context.hpp>
-#include <auik/draw.hpp>
 #include <auik/pipelines.hpp>
 #include "context.hpp"
 #include "picker/picker.hpp"
+
 
 namespace auik
 {
@@ -148,7 +150,8 @@ namespace auik
             const u32 id = static_cast<u32>(clip_rects.size());
             assert(id <= 0xFFFFu && "Clip rect limit exceeded (u16)");
             const auto result = clip_rects.push_back(rect);
-            if (result & agrb::VectorResultBits::buffer_reallocated) mark_clip_rects_reallocated(ctx, get_context().frame_id);
+            if (result & agrb::VectorResultBits::buffer_reallocated)
+                mark_clip_rects_reallocated(ctx, get_context().frame_id);
             return static_cast<u16>(id);
         }
 
@@ -401,7 +404,8 @@ namespace auik
         return agrb_ctx->picker->prepare(agrb_ctx);
     }
 
-    AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device, agrb::descriptor_pool *descriptor_pool)
+    AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device,
+                                                                 agrb::descriptor_pool *descriptor_pool)
     {
         auto *agrb_ctx = acul::alloc<detail::AgrbContext>(device, descriptor_pool);
         agrb_ctx->create_resources = &create_agrb_resources;
@@ -429,7 +433,8 @@ namespace auik
         return agrb_ctx;
     }
 
-    AUIK_GBE_AGRB_EXPORT TextureID add_agrb_texture(vk::Sampler sampler, vk::ImageView image_view, vk::ImageLayout image_layout)
+    AUIK_GBE_AGRB_EXPORT TextureID add_agrb_texture(vk::Sampler sampler, vk::ImageView image_view,
+                                                    vk::ImageLayout image_layout)
     {
         auto &global_ctx = detail::get_context();
         auto *ctx = detail::get_agrb_context(global_ctx.gpu_ctx);
@@ -498,15 +503,26 @@ namespace auik
         pipeline.descriptor_set_layout.reset();
     }
 
+    bool construct_picker_pipeline(DrawPipeline &pipeline, agrb::device &device, bool bind_pipeline)
+    {
+        auto *gpu_ctx = detail::get_agrb_context(detail::get_context().gpu_ctx);
+        return gpu_ctx->picker->construct_pipeline(device, pipeline, bind_pipeline);
+    }
+
+    bool configure_picker_pipeline(agrb::graphics_pipeline_batch::artifact &artifact, DrawPipeline &pipeline)
+    {
+        auto *gpu_ctx = detail::get_agrb_context(detail::get_context().gpu_ctx);
+        return gpu_ctx->picker->configure_pipeline(gpu_ctx, artifact, pipeline);
+    }
+
     bool configure_service_pipelines(agrb::graphics_pipeline_batch &batch, DrawPipeline *pipelines)
     {
         auto &global_ctx = detail::get_context();
         auto &picker_artifact = batch.artifacts.emplace_back();
         construct_pipeline_artifact(picker_artifact, 0, &pipelines[0]);
         auto *gpu_ctx = detail::get_agrb_context(global_ctx.gpu_ctx);
-        auto &picker = gpu_ctx->picker;
-        if (!picker->construct_pipeline(gpu_ctx->device, pipelines[0])) return false;
-        return picker->configure_pipeline(gpu_ctx, picker_artifact, pipelines[0]);
+        if (!construct_picker_pipeline(pipelines[0], gpu_ctx->device)) return false;
+        return configure_picker_pipeline(picker_artifact, pipelines[0]);
     }
 
     bool configure_default_streams(agrb::graphics_pipeline_batch &batch, DrawPipeline *pipelines, DrawStream *streams,

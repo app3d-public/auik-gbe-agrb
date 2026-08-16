@@ -66,7 +66,7 @@ void main()
     if (!has_radius)
     {
         vec2 d = abs(in_local_pos) - half_size;
-        if (d.x > 0.0 || d.y > 0.0) { discard; }
+        if (d.x > 0.0 || d.y > 0.0) discard;
 
         vec4 fill_color = has_checker ? fill_checker(in_local_pos, in_size, in_background_color) : in_background_color;
         vec4 color = fill_color;
@@ -91,7 +91,7 @@ void main()
     float aa_outer = max(0.5 * fwidth(dist_outer), 1e-4);
     float fill_outer = 1.0 - smoothstep(-aa_outer, aa_outer, dist_outer);
 
-    if (fill_outer <= 0.0) { discard; }
+    if (fill_outer <= 0.0) discard;
 
     if (!has_border)
     {

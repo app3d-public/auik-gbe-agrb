@@ -14,12 +14,12 @@ layout(location = 0) out vec4 out_color;
 layout(std430, set = 0, binding = 1) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
 layout(set = 1, binding = 0) uniform sampler2D ui_textures[];
 
-#define TEXTURE_INSTANCE_TEXT_BIT 0x1u
+#define TEXTURE_INSTANCE_TINT_BIT 0x1u
 
 void main()
 {
     if (is_clipped(in_pixel_pos, clip_rects[in_clip_id])) discard;
     vec4 sampled = texture(ui_textures[nonuniformEXT(in_texture_id)], in_uv);
-    if ((in_flags & TEXTURE_INSTANCE_TEXT_BIT) != 0u) out_color = vec4(in_tint_color.rgb, in_tint_color.a * sampled.r);
-    else out_color = sampled;
+    if ((in_flags & TEXTURE_INSTANCE_TINT_BIT) != 0u) out_color = vec4(in_tint_color.rgb, in_tint_color.a * sampled.r);
+    else out_color = vec4(sampled.rgb, sampled.a * in_tint_color.a);
 }
