@@ -50,7 +50,8 @@ namespace auik
         pipeline.descriptor_set_layout =
             agrb::descriptor_set_layout::builder()
                 .add_binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
-                .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
+                .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
+                .add_binding(2, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
                 .build(device);
         if (!pipeline.descriptor_set_layout) return false;
 

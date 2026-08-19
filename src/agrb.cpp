@@ -12,7 +12,6 @@
 #include "context.hpp"
 #include "picker/picker.hpp"
 
-
 namespace auik
 {
     namespace detail
@@ -150,7 +149,7 @@ namespace auik
             const u32 id = static_cast<u32>(clip_rects.size());
             assert(id <= 0xFFFFu && "Clip rect limit exceeded (u16)");
             const auto result = clip_rects.push_back(rect);
-            if (result & agrb::VectorResultBits::buffer_reallocated)
+            if (result & agrb::vector_result_flag_bits::buffer_reallocated)
                 mark_clip_rects_reallocated(ctx, get_context().frame_id);
             return static_cast<u16>(id);
         }
@@ -162,7 +161,7 @@ namespace auik
             if (clip_id >= clip_rects.size())
             {
                 const auto result = clip_rects.resize(static_cast<u32>(clip_id) + 1u);
-                if (result & agrb::VectorResultBits::buffer_reallocated)
+                if (result & agrb::vector_result_flag_bits::buffer_reallocated)
                     mark_clip_rects_reallocated(ctx, get_context().frame_id);
             }
             clip_rects[clip_id] = rect;
@@ -197,7 +196,8 @@ namespace auik
                 return;
             }
             const auto result = dst.resize(src_size);
-            if (result & agrb::VectorResultBits::buffer_reallocated) mark_clip_rects_reallocated(ctx, dst_frame_id);
+            if (result & agrb::vector_result_flag_bits::buffer_reallocated)
+                mark_clip_rects_reallocated(ctx, dst_frame_id);
             memcpy(dst.data().mapped, src.data().mapped, src_size * sizeof(amal::vec4));
         }
 

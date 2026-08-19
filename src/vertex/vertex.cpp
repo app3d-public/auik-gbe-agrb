@@ -1,11 +1,13 @@
-#include <cstddef>
 #include <acul/scalars.hpp>
 #include <acul/string/string.hpp>
 #include <acul/vector.hpp>
 #include <auik-gbe-agrb/shaders.h>
 #include <auik/gbe/agrb/vertex_pipeline.hpp>
 #include <auik/pipelines.hpp>
+#include <cstddef>
+#include <cstring>
 #include "../context.hpp"
+#include "../dirty_pages.hpp"
 
 namespace auik::detail
 {
@@ -26,13 +28,26 @@ namespace auik::detail
         vk::DescriptorSet descriptor_set;
         vk::Buffer descriptor_buffer_clip_rects = nullptr;
         vk::Buffer descriptor_buffer_offsets = nullptr;
+        u32 vertices_version = 0u;
+        u32 indices_version = 0u;
+        u32 offsets_version = 0u;
+        u32 layout_version = 0u;
+        DirtyPageState vertices_pages;
+        DirtyPageState indices_pages;
+        DirtyPageState offsets_pages;
         bool descriptor_buffer_offsets_dirty = true;
     };
+
+    static void increment_version(u32 &version)
+    {
+        if (++version == 0u) ++version;
+    }
 
     static DrawDataID push_vertex_stream_batch(DrawStream *stream, const VertexStreamBatchData &batch, u32 frame_id)
     {
         DrawDataID draw_data_id{};
-        if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0)) return draw_data_id;
+        if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0))
+            return draw_data_id;
 
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
         const u32 batch_id = static_cast<u32>(gpu_data.batches.size());
@@ -43,7 +58,7 @@ namespace auik::detail
         range.index_count = batch.index_count;
 
         const auto offset_result = gpu_data.offsets.push_back(batch.offset);
-        if (offset_result & agrb::VectorResultBits::buffer_reallocated)
+        if (offset_result & agrb::vector_result_flag_bits::buffer_reallocated)
             gpu_data.descriptor_buffer_offsets_dirty = true;
         for (u32 i = 0; i < batch.vertex_count; ++i)
         {
@@ -56,6 +71,13 @@ namespace auik::detail
         draw_data_id.render_id = batch_id;
         draw_data_id.hit_id = AUIK_INVALID_DRAW_DATA_ID;
         gpu_data.batches.push_back(range);
+        increment_version(gpu_data.vertices_version);
+        increment_version(gpu_data.indices_version);
+        increment_version(gpu_data.offsets_version);
+        increment_version(gpu_data.layout_version);
+        reset_dirty_pages(gpu_data.vertices_pages, gpu_data.vertices.size(), gpu_data.vertices_version);
+        reset_dirty_pages(gpu_data.indices_pages, gpu_data.indices.size(), gpu_data.indices_version);
+        reset_dirty_pages(gpu_data.offsets_pages, gpu_data.offsets.size(), gpu_data.offsets_version);
         ++stream->draw_sizes[frame_id];
         return draw_data_id;
     }
@@ -65,8 +87,8 @@ namespace auik::detail
         return push_vertex_stream_batch(stream, *static_cast<const VertexStreamBatchData *>(data), frame_id);
     }
 
-    static void push_data_batch_to_vertex_stream(DrawStream *stream, const void *data, u32 count, DrawDataID *out_draw_ids,
-                                                 u32 frame_id)
+    static void push_data_batch_to_vertex_stream(DrawStream *stream, const void *data, u32 count,
+                                                 DrawDataID *out_draw_ids, u32 frame_id)
     {
         if (count == 0) return;
         const auto *batches = static_cast<const VertexStreamBatchData *>(data);
@@ -77,10 +99,15 @@ namespace auik::detail
         }
     }
 
-    static void update_vertex_stream_batch(VertexStreamGPUData &gpu_data, u32 batch_id, const VertexStreamBatchRange &range,
-                                           const VertexStreamBatchData &batch)
+    static void update_vertex_stream_batch(VertexStreamGPUData &gpu_data, u32 batch_id,
+                                           const VertexStreamBatchRange &range, const VertexStreamBatchData &batch)
     {
-        if (batch_id < gpu_data.offsets.size()) gpu_data.offsets[batch_id] = batch.offset;
+        if (batch_id < gpu_data.offsets.size() && gpu_data.offsets[batch_id] != batch.offset)
+        {
+            gpu_data.offsets[batch_id] = batch.offset;
+            increment_version(gpu_data.offsets_version);
+            mark_dirty_page(gpu_data.offsets_pages, gpu_data.offsets.size(), batch_id, gpu_data.offsets_version);
+        }
         if (!batch.vertices && !batch.indices && batch.vertex_count == 0u && batch.index_count == 0u) return;
         if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0)) return;
         if (range.vertex_count != batch.vertex_count || range.index_count != batch.index_count) return;
@@ -93,6 +120,12 @@ namespace auik::detail
         }
         for (u32 i = 0; i < batch.index_count; ++i)
             gpu_data.indices[range.index_offset + i] = batch.indices[i] + range.vertex_offset;
+        increment_version(gpu_data.vertices_version);
+        increment_version(gpu_data.indices_version);
+        mark_dirty_page_range(gpu_data.vertices_pages, gpu_data.vertices.size(), range.vertex_offset,
+                              range.vertex_count, gpu_data.vertices_version);
+        mark_dirty_page_range(gpu_data.indices_pages, gpu_data.indices.size(), range.index_offset, range.index_count,
+                              gpu_data.indices_version);
     }
 
     static void update_vertex_stream_data(DrawStream *stream, DrawDataID draw_data_id, const void *data, u32 frame_id)
@@ -112,6 +145,9 @@ namespace auik::detail
 
         const VertexStreamIndex degenerate_index = range.vertex_offset;
         for (u32 i = 0; i < range.index_count; ++i) gpu_data.indices[range.index_offset + i] = degenerate_index;
+        increment_version(gpu_data.indices_version);
+        mark_dirty_page_range(gpu_data.indices_pages, gpu_data.indices.size(), range.index_offset, range.index_count,
+                              gpu_data.indices_version);
     }
 
     static void update_vertex_stream_data_batch(DrawStream *stream, const DrawDataID *draw_data_ids, const void *data,
@@ -132,10 +168,17 @@ namespace auik::detail
     static void clear_vertex_stream(DrawStream *stream, u32 frame_id)
     {
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
+        if (!gpu_data.vertices.empty()) increment_version(gpu_data.vertices_version);
+        if (!gpu_data.indices.empty()) increment_version(gpu_data.indices_version);
+        if (!gpu_data.offsets.empty()) increment_version(gpu_data.offsets_version);
+        if (!gpu_data.batches.empty()) increment_version(gpu_data.layout_version);
         gpu_data.vertices.clear();
         gpu_data.indices.clear();
         gpu_data.offsets.clear();
         gpu_data.batches.clear();
+        reset_dirty_pages(gpu_data.vertices_pages, 0u, gpu_data.vertices_version);
+        reset_dirty_pages(gpu_data.indices_pages, 0u, gpu_data.indices_version);
+        reset_dirty_pages(gpu_data.offsets_pages, 0u, gpu_data.offsets_version);
     }
 
     static void copy_vertex_stream_frame_data(DrawStream *stream, u32 dst_frame_id, u32 src_frame_id)
@@ -145,18 +188,59 @@ namespace auik::detail
         auto *frames = static_cast<VertexStreamGPUData *>(stream->stream_instances);
         auto &dst = frames[dst_frame_id];
         auto &src = frames[src_frame_id];
-        dst.vertices.clear();
-        dst.indices.clear();
-        dst.offsets.clear();
-        for (u32 i = 0; i < src.vertices.size(); ++i) dst.vertices.push_back(src.vertices[i]);
-        for (u32 i = 0; i < src.indices.size(); ++i) dst.indices.push_back(src.indices[i]);
-        for (u32 i = 0; i < src.offsets.size(); ++i)
+        const size_t vertex_count = src.vertices.size();
+        const size_t index_count = src.indices.size();
+        const size_t offset_count = src.offsets.size();
+        const size_t batch_count = src.batches.size();
+        const bool vertices_size_changed = dst.vertices.size() != vertex_count;
+        const bool indices_size_changed = dst.indices.size() != index_count;
+        const bool offsets_size_changed = dst.offsets.size() != offset_count;
+        const bool layout_changed =
+            vertices_size_changed || indices_size_changed || offsets_size_changed || dst.batches.size() != batch_count;
+
+        if (dst.vertices.size() != vertex_count)
         {
-            const auto result = dst.offsets.push_back(src.offsets[i]);
-            if (result & agrb::VectorResultBits::buffer_reallocated) dst.descriptor_buffer_offsets_dirty = true;
+            dst.vertices.clear();
+            if (!(dst.vertices.resize(vertex_count) & agrb::vector_result_flag_bits::success))
+            {
+                stream->draw_sizes[dst_frame_id] = 0u;
+                return;
+            }
         }
-        dst.batches.clear();
-        dst.batches.insert(dst.batches.end(), src.batches.begin(), src.batches.end());
+        if (dst.indices.size() != index_count)
+        {
+            dst.indices.clear();
+            if (!(dst.indices.resize(index_count) & agrb::vector_result_flag_bits::success))
+            {
+                stream->draw_sizes[dst_frame_id] = 0u;
+                return;
+            }
+        }
+        if (dst.offsets.size() != offset_count)
+        {
+            dst.offsets.clear();
+            const auto offset_result = dst.offsets.resize(offset_count);
+            if (!(offset_result & agrb::vector_result_flag_bits::success))
+            {
+                stream->draw_sizes[dst_frame_id] = 0u;
+                return;
+            }
+            if (offset_result & agrb::vector_result_flag_bits::buffer_reallocated)
+                dst.descriptor_buffer_offsets_dirty = true;
+        }
+
+        if (dst.vertices_version != src.vertices_version || vertices_size_changed)
+            sync_paged_buffer(dst.vertices, src.vertices, dst.vertices_pages, src.vertices_pages,
+                              vertices_size_changed);
+        if (dst.indices_version != src.indices_version || indices_size_changed)
+            sync_paged_buffer(dst.indices, src.indices, dst.indices_pages, src.indices_pages, indices_size_changed);
+        if (dst.offsets_version != src.offsets_version || offsets_size_changed)
+            sync_paged_buffer(dst.offsets, src.offsets, dst.offsets_pages, src.offsets_pages, offsets_size_changed);
+        if (layout_changed || dst.layout_version != src.layout_version) dst.batches = src.batches;
+        dst.vertices_version = src.vertices_version;
+        dst.indices_version = src.indices_version;
+        dst.offsets_version = src.offsets_version;
+        dst.layout_version = src.layout_version;
         stream->draw_sizes[dst_frame_id] = stream->draw_sizes[src_frame_id];
     }
 
@@ -171,25 +255,26 @@ namespace auik::detail
             gpu_data.offsets.destroy();
             gpu_data.batches.clear();
         }
-        acul::release(static_cast<VertexStreamGPUData *>(stream->stream_instances), count);
+        auto *frames = static_cast<VertexStreamGPUData *>(stream->stream_instances);
+        acul::release(frames, count);
     }
 
     static void *create_vertex_stream_gpu_data(u32 instance_count, GPUContext *gpu_context)
     {
         auto *data = acul::alloc_n<VertexStreamGPUData>(instance_count);
         auto &device = get_agrb_device(gpu_context);
-        agrb::managed_buffer vertex_buf{
-            .required_flags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-            .buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer,
-            .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
-        agrb::managed_buffer index_buf{
-            .required_flags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-            .buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer,
-            .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
-        agrb::managed_buffer offset_buf{
-            .required_flags = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-            .buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer,
-            .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
+        agrb::managed_buffer vertex_buf{.required_flags = vk::MemoryPropertyFlagBits::eHostVisible |
+                                                          vk::MemoryPropertyFlagBits::eHostCoherent,
+                                        .buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer,
+                                        .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
+        agrb::managed_buffer index_buf{.required_flags = vk::MemoryPropertyFlagBits::eHostVisible |
+                                                         vk::MemoryPropertyFlagBits::eHostCoherent,
+                                       .buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer,
+                                       .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
+        agrb::managed_buffer offset_buf{.required_flags = vk::MemoryPropertyFlagBits::eHostVisible |
+                                                          vk::MemoryPropertyFlagBits::eHostCoherent,
+                                        .buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                        .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
         for (u32 i = 0; i < instance_count; ++i)
         {
             data[i].vertices.init(device, vertex_buf);
@@ -319,8 +404,8 @@ namespace auik
                                                 static_cast<u32>(offsetof(VertexStreamVertex, position))},
             vk::VertexInputAttributeDescription{1, 0, vk::Format::eR32G32Uint,
                                                 static_cast<u32>(offsetof(VertexStreamVertex, color))}};
-        artifact.config.vertex_input_info.setVertexBindingDescriptionCount(static_cast<u32>(
-                                              artifact.config.binding_descriptions.size()))
+        artifact.config.vertex_input_info
+            .setVertexBindingDescriptionCount(static_cast<u32>(artifact.config.binding_descriptions.size()))
             .setPVertexBindingDescriptions(artifact.config.binding_descriptions.data())
             .setVertexAttributeDescriptionCount(static_cast<u32>(artifact.config.attribute_descriptions.size()))
             .setPVertexAttributeDescriptions(artifact.config.attribute_descriptions.data());

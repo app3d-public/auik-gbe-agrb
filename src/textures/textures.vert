@@ -1,8 +1,6 @@
 #version 460
-struct TexturesInstanceData
+struct TexturesStyleData
 {
-    vec2 position;
-    vec2 size;
     vec2 uv_offset;
     vec2 uv_size;
     uint tint_color;
@@ -11,7 +9,8 @@ struct TexturesInstanceData
     uint flags;
 };
 
-layout(std430, set = 0, binding = 0) readonly buffer TexturesBuffer { TexturesInstanceData instances[]; };
+layout(std430, set = 0, binding = 0) readonly buffer RectBuffer { vec4 rects[]; };
+layout(std430, set = 0, binding = 1) readonly buffer StyleBuffer { TexturesStyleData styles[]; };
 
 layout(push_constant) uniform Push { vec2 window_size; };
 
@@ -31,18 +30,19 @@ vec2 get_quad_uv(uint vertex_index)
 
 void main()
 {
-    TexturesInstanceData instance = instances[gl_InstanceIndex];
+    vec4 rect = rects[gl_InstanceIndex];
+    TexturesStyleData style = styles[gl_InstanceIndex];
     vec2 uv = get_quad_uv(uint(gl_VertexIndex));
 
-    vec2 pixel_pos = instance.position + uv * instance.size;
+    vec2 pixel_pos = rect.xy + uv * rect.zw;
     vec2 ndc = vec2((pixel_pos.x / window_size.x) * 2.0 - 1.0, (pixel_pos.y / window_size.y) * 2.0 - 1.0);
 
-    gl_Position = vec4(ndc, instance.z_order, 1.0);
+    gl_Position = vec4(ndc, style.z_order, 1.0);
 
-    out_uv = instance.uv_offset + uv * instance.uv_size;
-    out_tint_color = unpackUnorm4x8(instance.tint_color);
-    out_texture_id = instance.packed_id & 0xFFFFu;
-    out_clip_id = instance.packed_id >> 16u;
-    out_flags = instance.flags;
+    out_uv = style.uv_offset + uv * style.uv_size;
+    out_tint_color = unpackUnorm4x8(style.tint_color);
+    out_texture_id = style.packed_id & 0xFFFFu;
+    out_clip_id = style.packed_id >> 16u;
+    out_flags = style.flags;
     out_pixel_pos = pixel_pos;
 }

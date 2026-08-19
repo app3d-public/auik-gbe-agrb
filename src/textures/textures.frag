@@ -11,7 +11,7 @@ layout(location = 5) in vec2 in_pixel_pos;
 
 layout(location = 0) out vec4 out_color;
 
-layout(std430, set = 0, binding = 1) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
+layout(std430, set = 0, binding = 2) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
 layout(set = 1, binding = 0) uniform sampler2D ui_textures[];
 
 #define TEXTURE_INSTANCE_TINT_BIT 0x1u

@@ -10,7 +10,7 @@ layout(location = 5) in vec2 in_local_pos;
 layout(location = 6) flat in vec2 in_rect_size;
 layout(location = 0) out uvec4 out_id;
 
-layout(std430, set = 0, binding = 1) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
+layout(std430, set = 0, binding = 2) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
 
 #define AUIK_HITBOX_PAD 4.0
 

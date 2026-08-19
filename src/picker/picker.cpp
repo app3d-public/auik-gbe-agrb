@@ -3,8 +3,8 @@
 #include <agrb/utils/buffer.hpp>
 #include <agrb/utils/image.hpp>
 #include <auik-gbe-agrb/shaders.h>
-#include <auik/gbe/agrb/agrb.hpp>
 #include <auik/detail/context.hpp>
+#include <auik/gbe/agrb/agrb.hpp>
 #include "../context.hpp"
 
 namespace auik::detail
@@ -172,39 +172,52 @@ namespace auik::detail
             .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
         buf.instance_count = 1;
         const u32 frames_in_flight = get_context().frames_in_flight;
-        _rects = acul::alloc_n<agrb::vector<RectData>>(frames_in_flight);
-        for (u32 i = 0; i < frames_in_flight; ++i) _rects[i].init(device, buf);
+        _rects = acul::alloc_n<PickerFrameData>(frames_in_flight);
+        for (u32 i = 0; i < frames_in_flight; ++i)
+        {
+            _rects[i].transforms.init(device, buf);
+            _rects[i].styles.init(device, buf);
+        }
 
         _descriptor_set_layout =
             agrb::descriptor_set_layout::builder()
                 .add_binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
-                .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
+                .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
+                .add_binding(2, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
                 .build(device);
         if (!_descriptor_set_layout) return false;
         auto &global_ctx = get_context();
         _descriptor_sets.resize(frames_in_flight);
-        _descriptor_buffer_instances.resize(frames_in_flight);
+        _descriptor_buffer_transforms.resize(frames_in_flight);
+        _descriptor_buffer_styles.resize(frames_in_flight);
         _descriptor_buffer_clip_rects.resize(frames_in_flight);
-        _descriptor_buffer_instances_dirty.resize(frames_in_flight);
+        _descriptor_buffer_transforms_dirty.resize(frames_in_flight);
+        _descriptor_buffer_styles_dirty.resize(frames_in_flight);
 
         auto *agrb_ctx = get_agrb_context(global_ctx.gpu_ctx);
         if (!agrb_ctx->clip_rects) return false;
         for (u32 i = 0; i < frames_in_flight; ++i)
         {
-            const auto &instances_data = _rects[i].data();
+            const auto &transforms_data = _rects[i].transforms.data();
+            const auto &styles_data = _rects[i].styles.data();
             const auto &clip_rects_data = agrb_ctx->clip_rects[i].data();
-            const vk::Buffer instance_buffer = instances_data.vk_buffer;
+            const vk::Buffer transform_buffer = transforms_data.vk_buffer;
+            const vk::Buffer style_buffer = styles_data.vk_buffer;
             const vk::Buffer clip_rects_buffer = clip_rects_data.vk_buffer;
-            if (!instance_buffer || !clip_rects_buffer) return false;
-            vk::DescriptorBufferInfo instance_info{instance_buffer, 0, VK_WHOLE_SIZE};
+            if (!transform_buffer || !style_buffer || !clip_rects_buffer) return false;
+            vk::DescriptorBufferInfo transform_info{transform_buffer, 0, VK_WHOLE_SIZE};
+            vk::DescriptorBufferInfo style_info{style_buffer, 0, VK_WHOLE_SIZE};
             vk::DescriptorBufferInfo clip_rects_info{clip_rects_buffer, 0, VK_WHOLE_SIZE};
             agrb::descriptor_writer writer(*_descriptor_set_layout, *agrb_ctx->descriptor_pool);
-            writer.write_buffer(0, &instance_info);
-            writer.write_buffer(1, &clip_rects_info);
+            writer.write_buffer(0, &transform_info);
+            writer.write_buffer(1, &style_info);
+            writer.write_buffer(2, &clip_rects_info);
             if (!writer.build(_descriptor_sets[i])) return false;
-            _descriptor_buffer_instances[i] = instance_buffer;
+            _descriptor_buffer_transforms[i] = transform_buffer;
+            _descriptor_buffer_styles[i] = style_buffer;
             _descriptor_buffer_clip_rects[i] = clip_rects_buffer;
-            _descriptor_buffer_instances_dirty[i] = false;
+            _descriptor_buffer_transforms_dirty[i] = false;
+            _descriptor_buffer_styles_dirty[i] = false;
         }
         return true;
     }
@@ -243,26 +256,34 @@ namespace auik::detail
         assert(frame_id < _descriptor_sets.size());
         assert(ctx->clip_rects);
 
-        const auto &instances_data = _rects[frame_id].data();
+        const auto &transforms_data = _rects[frame_id].transforms.data();
+        const auto &styles_data = _rects[frame_id].styles.data();
         const auto &clip_rects_data = ctx->clip_rects[frame_id].data();
-        const vk::Buffer instance_buffer = instances_data.vk_buffer;
+        const vk::Buffer transform_buffer = transforms_data.vk_buffer;
+        const vk::Buffer style_buffer = styles_data.vk_buffer;
         const vk::Buffer clip_rects_buffer = clip_rects_data.vk_buffer;
         const bool clip_rects_reallocated = ctx->clip_rects_reallocated && ctx->clip_rects_reallocated[frame_id];
-        if (!instance_buffer || !clip_rects_buffer) return false;
-        if (_descriptor_buffer_instances[frame_id] == instance_buffer &&
+        if (!transform_buffer || !style_buffer || !clip_rects_buffer) return false;
+        if (_descriptor_buffer_transforms[frame_id] == transform_buffer &&
+            _descriptor_buffer_styles[frame_id] == style_buffer &&
             _descriptor_buffer_clip_rects[frame_id] == clip_rects_buffer &&
-            !_descriptor_buffer_instances_dirty[frame_id] && !clip_rects_reallocated)
+            !_descriptor_buffer_transforms_dirty[frame_id] && !_descriptor_buffer_styles_dirty[frame_id] &&
+            !clip_rects_reallocated)
             return true;
 
-        vk::DescriptorBufferInfo instance_info{instance_buffer, 0, VK_WHOLE_SIZE};
+        vk::DescriptorBufferInfo transform_info{transform_buffer, 0, VK_WHOLE_SIZE};
+        vk::DescriptorBufferInfo style_info{style_buffer, 0, VK_WHOLE_SIZE};
         vk::DescriptorBufferInfo clip_rects_info{clip_rects_buffer, 0, VK_WHOLE_SIZE};
         agrb::descriptor_writer writer(*_descriptor_set_layout, *ctx->descriptor_pool);
-        writer.write_buffer(0, &instance_info);
-        writer.write_buffer(1, &clip_rects_info);
+        writer.write_buffer(0, &transform_info);
+        writer.write_buffer(1, &style_info);
+        writer.write_buffer(2, &clip_rects_info);
         writer.overwrite(_descriptor_sets[frame_id]);
-        _descriptor_buffer_instances[frame_id] = instance_buffer;
+        _descriptor_buffer_transforms[frame_id] = transform_buffer;
+        _descriptor_buffer_styles[frame_id] = style_buffer;
         _descriptor_buffer_clip_rects[frame_id] = clip_rects_buffer;
-        _descriptor_buffer_instances_dirty[frame_id] = false;
+        _descriptor_buffer_transforms_dirty[frame_id] = false;
+        _descriptor_buffer_styles_dirty[frame_id] = false;
         return true;
     }
 
@@ -276,15 +297,21 @@ namespace auik::detail
         if (_rects)
         {
             const u32 frames = get_context().frames_in_flight;
-            for (u32 i = 0; i < frames; ++i) _rects[i].destroy();
+            for (u32 i = 0; i < frames; ++i)
+            {
+                _rects[i].transforms.destroy();
+                _rects[i].styles.destroy();
+            }
             acul::release(_rects, frames);
             _rects = nullptr;
         }
         _descriptor_set_layout.reset();
         _descriptor_sets.clear();
-        _descriptor_buffer_instances.clear();
+        _descriptor_buffer_transforms.clear();
+        _descriptor_buffer_styles.clear();
         _descriptor_buffer_clip_rects.clear();
-        _descriptor_buffer_instances_dirty.clear();
+        _descriptor_buffer_transforms_dirty.clear();
+        _descriptor_buffer_styles_dirty.clear();
         _pipeline = nullptr;
         _device = nullptr;
         _depth_format = vk::Format::eUndefined;
@@ -313,7 +340,8 @@ namespace auik::detail
             _descriptor_set_layout =
                 agrb::descriptor_set_layout::builder()
                     .add_binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
-                    .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
+                    .add_binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
+                    .add_binding(2, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eFragment)
                     .build(device);
             if (!_descriptor_set_layout) return false;
         }
@@ -391,14 +419,14 @@ namespace auik::detail
         cmd->setScissor(0, 1, &scissor, loader);
 
         auto &rects = frame_rects(frame_id);
-        if (!rects.empty() && update_descriptors(ctx, frame_id))
+        if (!rects.transforms.empty() && update_descriptors(ctx, frame_id))
         {
             cmd->bindPipeline(vk::PipelineBindPoint::eGraphics, _pipeline->handle, loader);
             cmd->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, _pipeline->layout, 0, 1,
                                     &_descriptor_sets[frame_id], 0, nullptr, loader);
             cmd->pushConstants(_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(amal::vec2),
                                &io.display_size, loader);
-            cmd->draw(6, rects.size(), 0, 0, loader);
+            cmd->draw(6, rects.transforms.size(), 0, 0, loader);
         }
         cmd->endRenderPass(loader);
         {
@@ -430,9 +458,18 @@ namespace auik::detail
     {
         const u32 frame_id = get_context().frame_id;
         auto &rects = frame_rects(frame_id);
-        const u32 id = static_cast<u32>(rects.size());
-        const auto result = rects.push_back(rect);
-        if (result & agrb::VectorResultBits::buffer_reallocated) _descriptor_buffer_instances_dirty[frame_id] = true;
+        const u32 id = static_cast<u32>(rects.transforms.size());
+        const auto transform_result = rects.transforms.push_back(rect.bounds);
+        const auto style_result =
+            rects.styles.push_back(PickerStyleData{rect.id, rect.hit_depth, rect.depth, rect.clip_id, rect.flags});
+        if (transform_result & agrb::vector_result_flag_bits::buffer_reallocated)
+            _descriptor_buffer_transforms_dirty[frame_id] = true;
+        if (style_result & agrb::vector_result_flag_bits::buffer_reallocated)
+            _descriptor_buffer_styles_dirty[frame_id] = true;
+        if (++rects.transform_version == 0u) ++rects.transform_version;
+        if (++rects.style_version == 0u) ++rects.style_version;
+        reset_dirty_pages(rects.transform_pages, rects.transforms.size(), rects.transform_version);
+        reset_dirty_pages(rects.style_pages, rects.styles.size(), rects.style_version);
         return id;
     }
 
@@ -440,22 +477,59 @@ namespace auik::detail
     {
         const u32 frame_id = get_context().frame_id;
         auto &rects = frame_rects(frame_id);
-        if (id >= rects.size()) return;
-        rects[id] = rect;
+        if (id >= rects.transforms.size()) return;
+        const amal::rect transform = rect.bounds;
+        auto &current_transform = rects.transforms[id];
+        if (current_transform.offset != transform.offset || current_transform.size != transform.size)
+        {
+            current_transform = transform;
+            if (++rects.transform_version == 0u) ++rects.transform_version;
+            mark_dirty_page(rects.transform_pages, rects.transforms.size(), id, rects.transform_version);
+        }
+        const PickerStyleData style{rect.id, rect.hit_depth, rect.depth, rect.clip_id, rect.flags};
+        auto &current_style = rects.styles[id];
+        if (current_style.id != style.id || current_style.hit_depth != style.hit_depth ||
+            current_style.depth != style.depth || current_style.clip_id != style.clip_id ||
+            current_style.flags != style.flags)
+        {
+            current_style = style;
+            if (++rects.style_version == 0u) ++rects.style_version;
+            mark_dirty_page(rects.style_pages, rects.styles.size(), id, rects.style_version);
+        }
     }
 
-    void GPUPicker::clear_hit_rects() { frame_rects(get_context().frame_id).clear(); }
+    void GPUPicker::clear_hit_rects()
+    {
+        auto &rects = frame_rects(get_context().frame_id);
+        if (!rects.transforms.empty() && ++rects.transform_version == 0u) ++rects.transform_version;
+        if (!rects.styles.empty() && ++rects.style_version == 0u) ++rects.style_version;
+        rects.transforms.clear();
+        rects.styles.clear();
+        reset_dirty_pages(rects.transform_pages, 0u, rects.transform_version);
+        reset_dirty_pages(rects.style_pages, 0u, rects.style_version);
+    }
 
     void GPUPicker::copy_frame_data(u32 dst_frame_id, u32 src_frame_id)
     {
         if (dst_frame_id == src_frame_id || !_rects) return;
         auto &dst = frame_rects(dst_frame_id);
         auto &src = frame_rects(src_frame_id);
-        const u32 src_size = static_cast<u32>(src.size());
-        const auto result = dst.resize(src_size);
-        if (result & agrb::VectorResultBits::buffer_reallocated) _descriptor_buffer_instances_dirty[dst_frame_id] = true;
-        if (src_size == 0) return;
-        memcpy(dst.data().mapped, src.data().mapped, src_size * sizeof(RectData));
+        const u32 count = static_cast<u32>(src.transforms.size());
+        const bool transform_size_changed = dst.transforms.size() != count;
+        const bool style_size_changed = dst.styles.size() != src.styles.size();
+        const auto transform_result = dst.transforms.resize(count);
+        const auto style_result = dst.styles.resize(src.styles.size());
+        if (transform_result & agrb::vector_result_flag_bits::buffer_reallocated)
+            _descriptor_buffer_transforms_dirty[dst_frame_id] = true;
+        if (style_result & agrb::vector_result_flag_bits::buffer_reallocated)
+            _descriptor_buffer_styles_dirty[dst_frame_id] = true;
+        if (transform_size_changed || dst.transform_version != src.transform_version)
+            sync_paged_buffer(dst.transforms, src.transforms, dst.transform_pages, src.transform_pages,
+                              transform_size_changed);
+        if (style_size_changed || dst.style_version != src.style_version)
+            sync_paged_buffer(dst.styles, src.styles, dst.style_pages, src.style_pages, style_size_changed);
+        dst.transform_version = src.transform_version;
+        dst.style_version = src.style_version;
     }
 
     void update_hover_id_impl(GPUContext *gpu_context, void *sync_ctx)

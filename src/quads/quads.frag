@@ -1,10 +1,11 @@
 #version 460
 #include <common/clip.glsl>
 
-#define AUIK_HAS_BORDER_BIT  0x1u
-#define AUIK_HAS_RADIUS_BIT  0x2u
-#define AUIK_HAS_CHECKER_BIT 0x4u
-#define AUIK_CHECKER_ROWS    2.0
+#define AUIK_HAS_BORDER_BIT    0x1u
+#define AUIK_HAS_RADIUS_BIT    0x2u
+#define AUIK_HAS_CHECKER_BIT   0x4u
+#define AUIK_INVERT_RADIUS_BIT 0x8u
+#define AUIK_CHECKER_ROWS      2.0
 
 layout(location = 0) in vec2 in_local_pos;
 layout(location = 1) flat in vec2 in_size;
@@ -19,7 +20,7 @@ layout(location = 9) in vec2 in_pixel_pos;
 
 layout(location = 0) out vec4 out_color;
 
-layout(std430, set = 0, binding = 1) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
+layout(std430, set = 0, binding = 2) readonly buffer ClipRectsBuffer { vec4 clip_rects[]; };
 
 float get_corner_radius(vec2 p, float radius, uint corner_mask)
 {
@@ -62,6 +63,7 @@ void main()
     bool has_border = (in_flags & AUIK_HAS_BORDER_BIT) != 0u;
     bool has_radius = (in_flags & AUIK_HAS_RADIUS_BIT) != 0u;
     bool has_checker = (in_flags & AUIK_HAS_CHECKER_BIT) != 0u;
+    bool invert_radius = (in_flags & AUIK_INVERT_RADIUS_BIT) != 0u;
     // Fast path: plain rect (no radius).
     if (!has_radius)
     {
@@ -90,6 +92,13 @@ void main()
     float dist_outer = sd_rounded_rect(in_local_pos, half_size, corner_radius);
     float aa_outer = max(0.5 * fwidth(dist_outer), 1e-4);
     float fill_outer = 1.0 - smoothstep(-aa_outer, aa_outer, dist_outer);
+
+    if (invert_radius)
+    {
+        if (dist_outer < 0.0) discard;
+        out_color = vec4(0.0);
+        return;
+    }
 
     if (fill_outer <= 0.0) discard;
 
