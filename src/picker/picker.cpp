@@ -312,6 +312,12 @@ namespace auik::detail
         _descriptor_buffer_clip_rects.clear();
         _descriptor_buffer_transforms_dirty.clear();
         _descriptor_buffer_styles_dirty.clear();
+        _master.transforms.clear();
+        _master.styles.clear();
+        _master.transform_pages.versions.clear();
+        _master.style_pages.versions.clear();
+        _master.transform_version = 0u;
+        _master.style_version = 0u;
         _pipeline = nullptr;
         _device = nullptr;
         _depth_format = vk::Format::eUndefined;
@@ -458,18 +464,23 @@ namespace auik::detail
     {
         const u32 frame_id = get_context().frame_id;
         auto &rects = frame_rects(frame_id);
-        const u32 id = static_cast<u32>(rects.transforms.size());
-        const auto transform_result = rects.transforms.push_back(rect.bounds);
-        const auto style_result =
-            rects.styles.push_back(PickerStyleData{rect.id, rect.hit_depth, rect.depth, rect.clip_id, rect.flags});
+        const u32 id = static_cast<u32>(_master.transforms.size());
+        _master.transforms.push_back(rect.bounds);
+        _master.styles.push_back(PickerStyleData{rect.id, rect.hit_depth, rect.depth, rect.clip_id, rect.flags});
+        const u32 transform_version = next_cache_version(_master.transform_version);
+        const u32 style_version = next_cache_version(_master.style_version);
+        reset_dirty_pages(_master.transform_pages, _master.transforms.size(), transform_version);
+        reset_dirty_pages(_master.style_pages, _master.styles.size(), style_version);
+        const auto transform_result = rects.transforms.push_back(_master.transforms.back());
+        const auto style_result = rects.styles.push_back(_master.styles.back());
         if (transform_result & agrb::vector_result_flag_bits::buffer_reallocated)
             _descriptor_buffer_transforms_dirty[frame_id] = true;
         if (style_result & agrb::vector_result_flag_bits::buffer_reallocated)
             _descriptor_buffer_styles_dirty[frame_id] = true;
-        if (++rects.transform_version == 0u) ++rects.transform_version;
-        if (++rects.style_version == 0u) ++rects.style_version;
-        reset_dirty_pages(rects.transform_pages, rects.transforms.size(), rects.transform_version);
-        reset_dirty_pages(rects.style_pages, rects.styles.size(), rects.style_version);
+        rects.transform_version = transform_version;
+        rects.style_version = style_version;
+        rects.transform_pages = _master.transform_pages;
+        rects.style_pages = _master.style_pages;
         return id;
     }
 
@@ -477,59 +488,70 @@ namespace auik::detail
     {
         const u32 frame_id = get_context().frame_id;
         auto &rects = frame_rects(frame_id);
-        if (id >= rects.transforms.size()) return;
+        if (id >= _master.transforms.size() || id >= rects.transforms.size()) return;
         const amal::rect transform = rect.bounds;
-        auto &current_transform = rects.transforms[id];
+        auto &current_transform = _master.transforms[id];
         if (current_transform.offset != transform.offset || current_transform.size != transform.size)
         {
             current_transform = transform;
-            if (++rects.transform_version == 0u) ++rects.transform_version;
-            mark_dirty_page(rects.transform_pages, rects.transforms.size(), id, rects.transform_version);
+            rects.transforms[id] = transform;
+            const u32 version = next_cache_version(_master.transform_version);
+            mark_dirty_page(_master.transform_pages, _master.transforms.size(), id, version);
+            rects.transform_version = version;
+            mark_dirty_page(rects.transform_pages, rects.transforms.size(), id, version);
         }
         const PickerStyleData style{rect.id, rect.hit_depth, rect.depth, rect.clip_id, rect.flags};
-        auto &current_style = rects.styles[id];
+        auto &current_style = _master.styles[id];
         if (current_style.id != style.id || current_style.hit_depth != style.hit_depth ||
             current_style.depth != style.depth || current_style.clip_id != style.clip_id ||
             current_style.flags != style.flags)
         {
             current_style = style;
-            if (++rects.style_version == 0u) ++rects.style_version;
-            mark_dirty_page(rects.style_pages, rects.styles.size(), id, rects.style_version);
+            rects.styles[id] = style;
+            const u32 version = next_cache_version(_master.style_version);
+            mark_dirty_page(_master.style_pages, _master.styles.size(), id, version);
+            rects.style_version = version;
+            mark_dirty_page(rects.style_pages, rects.styles.size(), id, version);
         }
     }
 
     void GPUPicker::clear_hit_rects()
     {
         auto &rects = frame_rects(get_context().frame_id);
-        if (!rects.transforms.empty() && ++rects.transform_version == 0u) ++rects.transform_version;
-        if (!rects.styles.empty() && ++rects.style_version == 0u) ++rects.style_version;
+        if (!_master.transforms.empty()) next_cache_version(_master.transform_version);
+        if (!_master.styles.empty()) next_cache_version(_master.style_version);
+        _master.transforms.clear();
+        _master.styles.clear();
+        reset_dirty_pages(_master.transform_pages, 0u, _master.transform_version);
+        reset_dirty_pages(_master.style_pages, 0u, _master.style_version);
         rects.transforms.clear();
         rects.styles.clear();
-        reset_dirty_pages(rects.transform_pages, 0u, rects.transform_version);
-        reset_dirty_pages(rects.style_pages, 0u, rects.style_version);
+        rects.transform_version = _master.transform_version;
+        rects.style_version = _master.style_version;
+        rects.transform_pages = _master.transform_pages;
+        rects.style_pages = _master.style_pages;
     }
 
     void GPUPicker::copy_frame_data(u32 dst_frame_id, u32 src_frame_id)
     {
         if (dst_frame_id == src_frame_id || !_rects) return;
         auto &dst = frame_rects(dst_frame_id);
-        auto &src = frame_rects(src_frame_id);
-        const u32 count = static_cast<u32>(src.transforms.size());
+        const u32 count = static_cast<u32>(_master.transforms.size());
         const bool transform_size_changed = dst.transforms.size() != count;
-        const bool style_size_changed = dst.styles.size() != src.styles.size();
+        const bool style_size_changed = dst.styles.size() != _master.styles.size();
         const auto transform_result = dst.transforms.resize(count);
-        const auto style_result = dst.styles.resize(src.styles.size());
+        const auto style_result = dst.styles.resize(_master.styles.size());
         if (transform_result & agrb::vector_result_flag_bits::buffer_reallocated)
             _descriptor_buffer_transforms_dirty[dst_frame_id] = true;
         if (style_result & agrb::vector_result_flag_bits::buffer_reallocated)
             _descriptor_buffer_styles_dirty[dst_frame_id] = true;
-        if (transform_size_changed || dst.transform_version != src.transform_version)
-            sync_paged_buffer(dst.transforms, src.transforms, dst.transform_pages, src.transform_pages,
-                              transform_size_changed);
-        if (style_size_changed || dst.style_version != src.style_version)
-            sync_paged_buffer(dst.styles, src.styles, dst.style_pages, src.style_pages, style_size_changed);
-        dst.transform_version = src.transform_version;
-        dst.style_version = src.style_version;
+        if (transform_size_changed || dst.transform_version != _master.transform_version)
+            upload_dirty_pages(dst.transforms, _master.transforms, dst.transform_pages, _master.transform_pages,
+                               transform_size_changed);
+        if (style_size_changed || dst.style_version != _master.style_version)
+            upload_dirty_pages(dst.styles, _master.styles, dst.style_pages, _master.style_pages, style_size_changed);
+        dst.transform_version = _master.transform_version;
+        dst.style_version = _master.style_version;
     }
 
     void update_hover_id_impl(GPUContext *gpu_context, void *sync_ctx)

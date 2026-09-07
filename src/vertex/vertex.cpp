@@ -19,29 +19,37 @@ namespace auik::detail
         u32 index_count = 0;
     };
 
+    struct VertexStreamMasterData
+    {
+        acul::vector<VertexStreamVertex> vertices;
+        acul::vector<VertexStreamIndex> indices;
+        acul::vector<amal::vec2> offsets;
+        acul::vector<VertexStreamBatchRange> batches;
+        u32 vertices_version = 0u;
+        u32 indices_version = 0u;
+        u32 offsets_version = 0u;
+        DirtyPageState vertices_pages;
+        DirtyPageState indices_pages;
+        DirtyPageState offsets_pages;
+    };
+
     struct VertexStreamGPUData
     {
+        VertexStreamMasterData *master = nullptr;
         agrb::vector<VertexStreamVertex> vertices;
         agrb::vector<VertexStreamIndex> indices;
         agrb::vector<amal::vec2> offsets;
-        acul::vector<VertexStreamBatchRange> batches;
         vk::DescriptorSet descriptor_set;
         vk::Buffer descriptor_buffer_clip_rects = nullptr;
         vk::Buffer descriptor_buffer_offsets = nullptr;
         u32 vertices_version = 0u;
         u32 indices_version = 0u;
         u32 offsets_version = 0u;
-        u32 layout_version = 0u;
         DirtyPageState vertices_pages;
         DirtyPageState indices_pages;
         DirtyPageState offsets_pages;
         bool descriptor_buffer_offsets_dirty = true;
     };
-
-    static void increment_version(u32 &version)
-    {
-        if (++version == 0u) ++version;
-    }
 
     static DrawDataID push_vertex_stream_batch(DrawStream *stream, const VertexStreamBatchData &batch, u32 frame_id)
     {
@@ -50,34 +58,46 @@ namespace auik::detail
             return draw_data_id;
 
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
-        const u32 batch_id = static_cast<u32>(gpu_data.batches.size());
+        auto &master = *gpu_data.master;
+        const u32 batch_id = static_cast<u32>(master.batches.size());
         VertexStreamBatchRange range{};
-        range.vertex_offset = static_cast<u32>(gpu_data.vertices.size());
+        range.vertex_offset = static_cast<u32>(master.vertices.size());
         range.vertex_count = batch.vertex_count;
-        range.index_offset = static_cast<u32>(gpu_data.indices.size());
+        range.index_offset = static_cast<u32>(master.indices.size());
         range.index_count = batch.index_count;
 
-        const auto offset_result = gpu_data.offsets.push_back(batch.offset);
+        master.offsets.push_back(batch.offset);
+        const auto offset_result = gpu_data.offsets.push_back(master.offsets.back());
         if (offset_result & agrb::vector_result_flag_bits::buffer_reallocated)
             gpu_data.descriptor_buffer_offsets_dirty = true;
         for (u32 i = 0; i < batch.vertex_count; ++i)
         {
             VertexStreamVertex vertex = batch.vertices[i];
             vertex.batch_id = static_cast<f32>(batch_id);
+            master.vertices.push_back(vertex);
             gpu_data.vertices.push_back(vertex);
         }
-        for (u32 i = 0; i < batch.index_count; ++i) gpu_data.indices.push_back(batch.indices[i] + range.vertex_offset);
+        for (u32 i = 0; i < batch.index_count; ++i)
+        {
+            master.indices.push_back(batch.indices[i] + range.vertex_offset);
+            gpu_data.indices.push_back(master.indices.back());
+        }
 
         draw_data_id.render_id = batch_id;
         draw_data_id.hit_id = AUIK_INVALID_DRAW_DATA_ID;
-        gpu_data.batches.push_back(range);
-        increment_version(gpu_data.vertices_version);
-        increment_version(gpu_data.indices_version);
-        increment_version(gpu_data.offsets_version);
-        increment_version(gpu_data.layout_version);
-        reset_dirty_pages(gpu_data.vertices_pages, gpu_data.vertices.size(), gpu_data.vertices_version);
-        reset_dirty_pages(gpu_data.indices_pages, gpu_data.indices.size(), gpu_data.indices_version);
-        reset_dirty_pages(gpu_data.offsets_pages, gpu_data.offsets.size(), gpu_data.offsets_version);
+        master.batches.push_back(range);
+        const u32 vertices_version = next_cache_version(master.vertices_version);
+        const u32 indices_version = next_cache_version(master.indices_version);
+        const u32 offsets_version = next_cache_version(master.offsets_version);
+        reset_dirty_pages(master.vertices_pages, master.vertices.size(), vertices_version);
+        reset_dirty_pages(master.indices_pages, master.indices.size(), indices_version);
+        reset_dirty_pages(master.offsets_pages, master.offsets.size(), offsets_version);
+        gpu_data.vertices_version = vertices_version;
+        gpu_data.indices_version = indices_version;
+        gpu_data.offsets_version = offsets_version;
+        gpu_data.vertices_pages = master.vertices_pages;
+        gpu_data.indices_pages = master.indices_pages;
+        gpu_data.offsets_pages = master.offsets_pages;
         ++stream->draw_sizes[frame_id];
         return draw_data_id;
     }
@@ -102,11 +122,15 @@ namespace auik::detail
     static void update_vertex_stream_batch(VertexStreamGPUData &gpu_data, u32 batch_id,
                                            const VertexStreamBatchRange &range, const VertexStreamBatchData &batch)
     {
-        if (batch_id < gpu_data.offsets.size() && gpu_data.offsets[batch_id] != batch.offset)
+        auto &master = *gpu_data.master;
+        if (batch_id < master.offsets.size() && master.offsets[batch_id] != batch.offset)
         {
+            master.offsets[batch_id] = batch.offset;
             gpu_data.offsets[batch_id] = batch.offset;
-            increment_version(gpu_data.offsets_version);
-            mark_dirty_page(gpu_data.offsets_pages, gpu_data.offsets.size(), batch_id, gpu_data.offsets_version);
+            const u32 version = next_cache_version(master.offsets_version);
+            mark_dirty_page(master.offsets_pages, master.offsets.size(), batch_id, version);
+            gpu_data.offsets_version = version;
+            mark_dirty_page(gpu_data.offsets_pages, gpu_data.offsets.size(), batch_id, version);
         }
         if (!batch.vertices && !batch.indices && batch.vertex_count == 0u && batch.index_count == 0u) return;
         if ((!batch.vertices && batch.vertex_count > 0) || (!batch.indices && batch.index_count > 0)) return;
@@ -116,38 +140,58 @@ namespace auik::detail
         {
             VertexStreamVertex vertex = batch.vertices[i];
             vertex.batch_id = static_cast<f32>(batch_id);
+            master.vertices[range.vertex_offset + i] = vertex;
             gpu_data.vertices[range.vertex_offset + i] = vertex;
         }
         for (u32 i = 0; i < batch.index_count; ++i)
-            gpu_data.indices[range.index_offset + i] = batch.indices[i] + range.vertex_offset;
-        increment_version(gpu_data.vertices_version);
-        increment_version(gpu_data.indices_version);
+        {
+            const auto index = batch.indices[i] + range.vertex_offset;
+            master.indices[range.index_offset + i] = index;
+            gpu_data.indices[range.index_offset + i] = index;
+        }
+        const u32 vertices_version = next_cache_version(master.vertices_version);
+        const u32 indices_version = next_cache_version(master.indices_version);
+        mark_dirty_page_range(master.vertices_pages, master.vertices.size(), range.vertex_offset, range.vertex_count,
+                              vertices_version);
+        mark_dirty_page_range(master.indices_pages, master.indices.size(), range.index_offset, range.index_count,
+                              indices_version);
+        gpu_data.vertices_version = vertices_version;
+        gpu_data.indices_version = indices_version;
         mark_dirty_page_range(gpu_data.vertices_pages, gpu_data.vertices.size(), range.vertex_offset,
-                              range.vertex_count, gpu_data.vertices_version);
+                              range.vertex_count, vertices_version);
         mark_dirty_page_range(gpu_data.indices_pages, gpu_data.indices.size(), range.index_offset, range.index_count,
-                              gpu_data.indices_version);
+                              indices_version);
     }
 
     static void update_vertex_stream_data(DrawStream *stream, DrawDataID draw_data_id, const void *data, u32 frame_id)
     {
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
-        if (draw_data_id.render_id >= gpu_data.batches.size()) return;
-        update_vertex_stream_batch(gpu_data, draw_data_id.render_id, gpu_data.batches[draw_data_id.render_id],
+        auto &master = *gpu_data.master;
+        if (draw_data_id.render_id >= master.batches.size()) return;
+        update_vertex_stream_batch(gpu_data, draw_data_id.render_id, master.batches[draw_data_id.render_id],
                                    *static_cast<const VertexStreamBatchData *>(data));
     }
 
     static void invalidate_vertex_stream_data(DrawStream *stream, DrawDataID draw_data_id, u32 frame_id)
     {
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
-        if (draw_data_id.render_id >= gpu_data.batches.size()) return;
-        const auto &range = gpu_data.batches[draw_data_id.render_id];
+        auto &master = *gpu_data.master;
+        if (draw_data_id.render_id >= master.batches.size()) return;
+        const auto &range = master.batches[draw_data_id.render_id];
         if (range.vertex_count == 0 || range.index_count == 0) return;
 
         const VertexStreamIndex degenerate_index = range.vertex_offset;
-        for (u32 i = 0; i < range.index_count; ++i) gpu_data.indices[range.index_offset + i] = degenerate_index;
-        increment_version(gpu_data.indices_version);
+        for (u32 i = 0; i < range.index_count; ++i)
+        {
+            master.indices[range.index_offset + i] = degenerate_index;
+            gpu_data.indices[range.index_offset + i] = degenerate_index;
+        }
+        const u32 version = next_cache_version(master.indices_version);
+        mark_dirty_page_range(master.indices_pages, master.indices.size(), range.index_offset, range.index_count,
+                              version);
+        gpu_data.indices_version = version;
         mark_dirty_page_range(gpu_data.indices_pages, gpu_data.indices.size(), range.index_offset, range.index_count,
-                              gpu_data.indices_version);
+                              version);
     }
 
     static void update_vertex_stream_data_batch(DrawStream *stream, const DrawDataID *draw_data_ids, const void *data,
@@ -156,29 +200,39 @@ namespace auik::detail
         if (count == 0) return;
 
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
+        auto &master = *gpu_data.master;
         const auto *batches = static_cast<const VertexStreamBatchData *>(data);
         for (u32 i = 0; i < count; ++i)
         {
             const u32 render_id = draw_data_ids[i].render_id;
-            if (render_id >= gpu_data.batches.size()) continue;
-            update_vertex_stream_batch(gpu_data, render_id, gpu_data.batches[render_id], batches[i]);
+            if (render_id >= master.batches.size()) continue;
+            update_vertex_stream_batch(gpu_data, render_id, master.batches[render_id], batches[i]);
         }
     }
 
     static void clear_vertex_stream(DrawStream *stream, u32 frame_id)
     {
         auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[frame_id];
-        if (!gpu_data.vertices.empty()) increment_version(gpu_data.vertices_version);
-        if (!gpu_data.indices.empty()) increment_version(gpu_data.indices_version);
-        if (!gpu_data.offsets.empty()) increment_version(gpu_data.offsets_version);
-        if (!gpu_data.batches.empty()) increment_version(gpu_data.layout_version);
+        auto &master = *gpu_data.master;
+        if (!master.vertices.empty()) next_cache_version(master.vertices_version);
+        if (!master.indices.empty()) next_cache_version(master.indices_version);
+        if (!master.offsets.empty()) next_cache_version(master.offsets_version);
+        master.vertices.clear();
+        master.indices.clear();
+        master.offsets.clear();
+        master.batches.clear();
+        reset_dirty_pages(master.vertices_pages, 0u, master.vertices_version);
+        reset_dirty_pages(master.indices_pages, 0u, master.indices_version);
+        reset_dirty_pages(master.offsets_pages, 0u, master.offsets_version);
         gpu_data.vertices.clear();
         gpu_data.indices.clear();
         gpu_data.offsets.clear();
-        gpu_data.batches.clear();
-        reset_dirty_pages(gpu_data.vertices_pages, 0u, gpu_data.vertices_version);
-        reset_dirty_pages(gpu_data.indices_pages, 0u, gpu_data.indices_version);
-        reset_dirty_pages(gpu_data.offsets_pages, 0u, gpu_data.offsets_version);
+        gpu_data.vertices_version = master.vertices_version;
+        gpu_data.indices_version = master.indices_version;
+        gpu_data.offsets_version = master.offsets_version;
+        gpu_data.vertices_pages = master.vertices_pages;
+        gpu_data.indices_pages = master.indices_pages;
+        gpu_data.offsets_pages = master.offsets_pages;
     }
 
     static void copy_vertex_stream_frame_data(DrawStream *stream, u32 dst_frame_id, u32 src_frame_id)
@@ -187,16 +241,13 @@ namespace auik::detail
 
         auto *frames = static_cast<VertexStreamGPUData *>(stream->stream_instances);
         auto &dst = frames[dst_frame_id];
-        auto &src = frames[src_frame_id];
-        const size_t vertex_count = src.vertices.size();
-        const size_t index_count = src.indices.size();
-        const size_t offset_count = src.offsets.size();
-        const size_t batch_count = src.batches.size();
+        auto &master = *dst.master;
+        const size_t vertex_count = master.vertices.size();
+        const size_t index_count = master.indices.size();
+        const size_t offset_count = master.offsets.size();
         const bool vertices_size_changed = dst.vertices.size() != vertex_count;
         const bool indices_size_changed = dst.indices.size() != index_count;
         const bool offsets_size_changed = dst.offsets.size() != offset_count;
-        const bool layout_changed =
-            vertices_size_changed || indices_size_changed || offsets_size_changed || dst.batches.size() != batch_count;
 
         if (dst.vertices.size() != vertex_count)
         {
@@ -229,32 +280,34 @@ namespace auik::detail
                 dst.descriptor_buffer_offsets_dirty = true;
         }
 
-        if (dst.vertices_version != src.vertices_version || vertices_size_changed)
-            sync_paged_buffer(dst.vertices, src.vertices, dst.vertices_pages, src.vertices_pages,
-                              vertices_size_changed);
-        if (dst.indices_version != src.indices_version || indices_size_changed)
-            sync_paged_buffer(dst.indices, src.indices, dst.indices_pages, src.indices_pages, indices_size_changed);
-        if (dst.offsets_version != src.offsets_version || offsets_size_changed)
-            sync_paged_buffer(dst.offsets, src.offsets, dst.offsets_pages, src.offsets_pages, offsets_size_changed);
-        if (layout_changed || dst.layout_version != src.layout_version) dst.batches = src.batches;
-        dst.vertices_version = src.vertices_version;
-        dst.indices_version = src.indices_version;
-        dst.offsets_version = src.offsets_version;
-        dst.layout_version = src.layout_version;
-        stream->draw_sizes[dst_frame_id] = stream->draw_sizes[src_frame_id];
+        if (dst.vertices_version != master.vertices_version || vertices_size_changed)
+            upload_dirty_pages(dst.vertices, master.vertices, dst.vertices_pages, master.vertices_pages,
+                               vertices_size_changed);
+        if (dst.indices_version != master.indices_version || indices_size_changed)
+            upload_dirty_pages(dst.indices, master.indices, dst.indices_pages, master.indices_pages,
+                               indices_size_changed);
+        if (dst.offsets_version != master.offsets_version || offsets_size_changed)
+            upload_dirty_pages(dst.offsets, master.offsets, dst.offsets_pages, master.offsets_pages,
+                               offsets_size_changed);
+        dst.vertices_version = master.vertices_version;
+        dst.indices_version = master.indices_version;
+        dst.offsets_version = master.offsets_version;
+        stream->draw_sizes[dst_frame_id] = static_cast<u32>(master.batches.size());
     }
 
     static void destroy_vertex_stream_gpu_data(DrawStream *stream)
     {
         const u32 count = get_context().frames_in_flight;
+        VertexStreamMasterData *master = nullptr;
         for (u32 i = 0; i < count; ++i)
         {
             auto &gpu_data = static_cast<VertexStreamGPUData *>(stream->stream_instances)[i];
+            if (!master) master = gpu_data.master;
             gpu_data.vertices.destroy();
             gpu_data.indices.destroy();
             gpu_data.offsets.destroy();
-            gpu_data.batches.clear();
         }
+        acul::release(master);
         auto *frames = static_cast<VertexStreamGPUData *>(stream->stream_instances);
         acul::release(frames, count);
     }
@@ -262,6 +315,7 @@ namespace auik::detail
     static void *create_vertex_stream_gpu_data(u32 instance_count, GPUContext *gpu_context)
     {
         auto *data = acul::alloc_n<VertexStreamGPUData>(instance_count);
+        auto *master = acul::alloc<VertexStreamMasterData>();
         auto &device = get_agrb_device(gpu_context);
         agrb::managed_buffer vertex_buf{.required_flags = vk::MemoryPropertyFlagBits::eHostVisible |
                                                           vk::MemoryPropertyFlagBits::eHostCoherent,
@@ -277,6 +331,7 @@ namespace auik::detail
                                         .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
         for (u32 i = 0; i < instance_count; ++i)
         {
+            data[i].master = master;
             data[i].vertices.init(device, vertex_buf);
             data[i].indices.init(device, index_buf);
             data[i].offsets.init(device, offset_buf);

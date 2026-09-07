@@ -75,16 +75,25 @@ namespace auik::detail
         return a.offset == b.offset && a.size == b.size;
     }
 
-    inline u32 current_instance_stream_version(const DrawStream *stream)
+    template <typename InstanceData>
+    struct InstanceMasterData
     {
-        if (!stream || !stream->runtime_data) return 0u;
-        return static_cast<const StreamSyncState *>(stream->runtime_data)->master_version;
-    }
+        // Canonical CPU state. Frame buffers are upload targets and are never read back for synchronization.
+        using Style = typename InstanceSplitTraits<InstanceData>::Style;
+        acul::vector<amal::rect> transforms;
+        acul::vector<Style> styles;
+        u32 transform_version = 0u;
+        u32 style_version = 0u;
+        DirtyPageState transform_pages;
+        DirtyPageState style_pages;
+    };
 
     template <typename InstanceData>
     struct InstanceStream
     {
+        using InstanceType = InstanceData;
         using Style = typename InstanceSplitTraits<InstanceData>::Style;
+        InstanceMasterData<InstanceData> *master = nullptr;
         agrb::vector<amal::rect> transforms;
         agrb::vector<Style> styles;
         vk::DescriptorSet descriptor_set;
@@ -104,18 +113,24 @@ namespace auik::detail
     {
         using Traits = InstanceSplitTraits<InstanceData>;
         auto &gpu = static_cast<InstanceStream<InstanceData> *>(stream->stream_instances)[frame_id];
+        auto &master = *gpu.master;
         const auto &value = *static_cast<const InstanceData *>(data);
-        const u32 version = current_instance_stream_version(stream);
         DrawDataID id{};
-        id.render_id = static_cast<u32>(gpu.transforms.size());
-        const auto tr = gpu.transforms.push_back(Traits::transform(value));
-        const auto sr = gpu.styles.push_back(Traits::style(value));
+        id.render_id = static_cast<u32>(master.transforms.size());
+        master.transforms.push_back(Traits::transform(value));
+        master.styles.push_back(Traits::style(value));
+        const u32 transform_version = next_cache_version(master.transform_version);
+        const u32 style_version = next_cache_version(master.style_version);
+        reset_dirty_pages(master.transform_pages, master.transforms.size(), transform_version);
+        reset_dirty_pages(master.style_pages, master.styles.size(), style_version);
+        const auto tr = gpu.transforms.push_back(master.transforms.back());
+        const auto sr = gpu.styles.push_back(master.styles.back());
         if (tr & agrb::vector_result_flag_bits::buffer_reallocated) gpu.descriptor_buffer_transforms_dirty = true;
         if (sr & agrb::vector_result_flag_bits::buffer_reallocated) gpu.descriptor_buffer_styles_dirty = true;
-        gpu.transform_version = version;
-        gpu.style_version = version;
-        reset_dirty_pages(gpu.transform_pages, gpu.transforms.size(), version);
-        reset_dirty_pages(gpu.style_pages, gpu.styles.size(), version);
+        gpu.transform_version = transform_version;
+        gpu.style_version = style_version;
+        gpu.transform_pages = master.transform_pages;
+        gpu.style_pages = master.style_pages;
         ++stream->draw_sizes[frame_id];
         return id;
     }
@@ -127,20 +142,26 @@ namespace auik::detail
         if (count == 0u) return;
         using Traits = InstanceSplitTraits<InstanceData>;
         auto &gpu = static_cast<InstanceStream<InstanceData> *>(stream->stream_instances)[frame_id];
-        const u32 version = current_instance_stream_version(stream);
-        const u32 base = static_cast<u32>(gpu.transforms.size());
+        auto &master = *gpu.master;
+        const u32 base = static_cast<u32>(master.transforms.size());
         const auto *values = static_cast<const InstanceData *>(data);
         for (u32 i = 0u; i < count; ++i)
         {
-            const auto tr = gpu.transforms.push_back(Traits::transform(values[i]));
-            const auto sr = gpu.styles.push_back(Traits::style(values[i]));
+            master.transforms.push_back(Traits::transform(values[i]));
+            master.styles.push_back(Traits::style(values[i]));
+            const auto tr = gpu.transforms.push_back(master.transforms.back());
+            const auto sr = gpu.styles.push_back(master.styles.back());
             if (tr & agrb::vector_result_flag_bits::buffer_reallocated) gpu.descriptor_buffer_transforms_dirty = true;
             if (sr & agrb::vector_result_flag_bits::buffer_reallocated) gpu.descriptor_buffer_styles_dirty = true;
         }
-        gpu.transform_version = version;
-        gpu.style_version = version;
-        reset_dirty_pages(gpu.transform_pages, gpu.transforms.size(), version);
-        reset_dirty_pages(gpu.style_pages, gpu.styles.size(), version);
+        const u32 transform_version = next_cache_version(master.transform_version);
+        const u32 style_version = next_cache_version(master.style_version);
+        reset_dirty_pages(master.transform_pages, master.transforms.size(), transform_version);
+        reset_dirty_pages(master.style_pages, master.styles.size(), style_version);
+        gpu.transform_version = transform_version;
+        gpu.style_version = style_version;
+        gpu.transform_pages = master.transform_pages;
+        gpu.style_pages = master.style_pages;
         stream->draw_sizes[frame_id] += count;
         if (!out_ids) return;
         for (u32 i = 0u; i < count; ++i)
@@ -151,21 +172,28 @@ namespace auik::detail
     }
 
     template <typename InstanceData>
-    void update_split_instance(InstanceStream<InstanceData> &gpu, u32 id, const InstanceData &value, u32 version)
+    void update_split_instance(InstanceStream<InstanceData> &gpu, u32 id, const InstanceData &value)
     {
         using Traits = InstanceSplitTraits<InstanceData>;
-        if (id >= gpu.transforms.size()) return;
+        auto &master = *gpu.master;
+        if (id >= master.transforms.size() || id >= gpu.transforms.size()) return;
         const auto transform = Traits::transform(value);
         const auto style = Traits::style(value);
-        if (!equal_instance_transform(gpu.transforms[id], transform))
+        if (!equal_instance_transform(master.transforms[id], transform))
         {
+            master.transforms[id] = transform;
             gpu.transforms[id] = transform;
+            const u32 version = next_cache_version(master.transform_version);
+            mark_dirty_page(master.transform_pages, master.transforms.size(), id, version);
             gpu.transform_version = version;
             mark_dirty_page(gpu.transform_pages, gpu.transforms.size(), id, version);
         }
-        if (!Traits::equal(gpu.styles[id], style))
+        if (!Traits::equal(master.styles[id], style))
         {
+            master.styles[id] = style;
             gpu.styles[id] = style;
+            const u32 version = next_cache_version(master.style_version);
+            mark_dirty_page(master.style_pages, master.styles.size(), id, version);
             gpu.style_version = version;
             mark_dirty_page(gpu.style_pages, gpu.styles.size(), id, version);
         }
@@ -175,19 +203,21 @@ namespace auik::detail
     void update_instance_stream_data(DrawStream *stream, DrawDataID id, const void *data, u32 frame_id)
     {
         auto &gpu = static_cast<InstanceStream<InstanceData> *>(stream->stream_instances)[frame_id];
-        update_split_instance(gpu, id.render_id, *static_cast<const InstanceData *>(data),
-                              current_instance_stream_version(stream));
+        update_split_instance(gpu, id.render_id, *static_cast<const InstanceData *>(data));
     }
 
     template <typename InstanceData>
     void invalidate_instance_stream_data(DrawStream *stream, DrawDataID id, u32 frame_id)
     {
         auto &gpu = static_cast<InstanceStream<InstanceData> *>(stream->stream_instances)[frame_id];
-        if (id.render_id >= gpu.transforms.size()) return;
+        auto &master = *gpu.master;
+        if (id.render_id >= master.transforms.size() || id.render_id >= gpu.transforms.size()) return;
         const amal::rect invalid{{-65536.0f, -65536.0f}, {0.0f, 0.0f}};
-        if (equal_instance_transform(gpu.transforms[id.render_id], invalid)) return;
+        if (equal_instance_transform(master.transforms[id.render_id], invalid)) return;
+        master.transforms[id.render_id] = invalid;
         gpu.transforms[id.render_id] = invalid;
-        const u32 version = current_instance_stream_version(stream);
+        const u32 version = next_cache_version(master.transform_version);
+        mark_dirty_page(master.transform_pages, master.transforms.size(), id.render_id, version);
         gpu.transform_version = version;
         mark_dirty_page(gpu.transform_pages, gpu.transforms.size(), id.render_id, version);
     }
@@ -198,21 +228,26 @@ namespace auik::detail
     {
         auto &gpu = static_cast<InstanceStream<InstanceData> *>(stream->stream_instances)[frame_id];
         const auto *values = static_cast<const InstanceData *>(data);
-        const u32 version = current_instance_stream_version(stream);
-        for (u32 i = 0u; i < count; ++i) update_split_instance(gpu, ids[i].render_id, values[i], version);
+        for (u32 i = 0u; i < count; ++i) update_split_instance(gpu, ids[i].render_id, values[i]);
     }
 
     template <typename Stream>
     void clear_instance_stream(DrawStream *stream, u32 frame_id)
     {
         auto &gpu = static_cast<Stream *>(stream->stream_instances)[frame_id];
-        const u32 version = current_instance_stream_version(stream);
-        if (!gpu.transforms.empty()) gpu.transform_version = version;
-        if (!gpu.styles.empty()) gpu.style_version = version;
+        auto &master = *gpu.master;
+        if (!master.transforms.empty()) next_cache_version(master.transform_version);
+        if (!master.styles.empty()) next_cache_version(master.style_version);
+        master.transforms.clear();
+        master.styles.clear();
+        reset_dirty_pages(master.transform_pages, 0u, master.transform_version);
+        reset_dirty_pages(master.style_pages, 0u, master.style_version);
         gpu.transforms.clear();
         gpu.styles.clear();
-        reset_dirty_pages(gpu.transform_pages, 0u, version);
-        reset_dirty_pages(gpu.style_pages, 0u, version);
+        gpu.transform_version = master.transform_version;
+        gpu.style_version = master.style_version;
+        gpu.transform_pages = master.transform_pages;
+        gpu.style_pages = master.style_pages;
     }
 
     template <typename T>
@@ -231,23 +266,23 @@ namespace auik::detail
         if (dst_id == src_id) return;
         auto *frames = static_cast<Stream *>(stream->stream_instances);
         auto &dst = frames[dst_id];
-        auto &src = frames[src_id];
-        const bool transform_size_changed = dst.transforms.size() != src.transforms.size();
-        const bool style_size_changed = dst.styles.size() != src.styles.size();
-        if (!resize_instance_buffer(dst.transforms, src.transforms.size(), dst.descriptor_buffer_transforms_dirty) ||
-            !resize_instance_buffer(dst.styles, src.styles.size(), dst.descriptor_buffer_styles_dirty))
+        auto &master = *dst.master;
+        const bool transform_size_changed = dst.transforms.size() != master.transforms.size();
+        const bool style_size_changed = dst.styles.size() != master.styles.size();
+        if (!resize_instance_buffer(dst.transforms, master.transforms.size(), dst.descriptor_buffer_transforms_dirty) ||
+            !resize_instance_buffer(dst.styles, master.styles.size(), dst.descriptor_buffer_styles_dirty))
         {
             stream->draw_sizes[dst_id] = 0u;
             return;
         }
-        if (transform_size_changed || dst.transform_version != src.transform_version)
-            sync_paged_buffer(dst.transforms, src.transforms, dst.transform_pages, src.transform_pages,
-                              transform_size_changed);
-        if (style_size_changed || dst.style_version != src.style_version)
-            sync_paged_buffer(dst.styles, src.styles, dst.style_pages, src.style_pages, style_size_changed);
-        dst.transform_version = src.transform_version;
-        dst.style_version = src.style_version;
-        stream->draw_sizes[dst_id] = stream->draw_sizes[src_id];
+        if (transform_size_changed || dst.transform_version != master.transform_version)
+            upload_dirty_pages(dst.transforms, master.transforms, dst.transform_pages, master.transform_pages,
+                               transform_size_changed);
+        if (style_size_changed || dst.style_version != master.style_version)
+            upload_dirty_pages(dst.styles, master.styles, dst.style_pages, master.style_pages, style_size_changed);
+        dst.transform_version = master.transform_version;
+        dst.style_version = master.style_version;
+        stream->draw_sizes[dst_id] = static_cast<u32>(master.transforms.size());
     }
 
     template <typename Stream>
@@ -271,12 +306,15 @@ namespace auik::detail
     void destroy_instance_stream_gpu_data(DrawStream *stream)
     {
         const u32 count = get_context().frames_in_flight;
+        InstanceMasterData<typename Stream::InstanceType> *master = nullptr;
         for (u32 i = 0u; i < count; ++i)
         {
             auto &gpu = static_cast<Stream *>(stream->stream_instances)[i];
+            if (!master) master = gpu.master;
             gpu.transforms.destroy();
             gpu.styles.destroy();
         }
+        acul::release(master);
         acul::release(static_cast<Stream *>(stream->stream_instances), count);
     }
 
@@ -284,6 +322,7 @@ namespace auik::detail
     void *create_instance_stream_gpu_data(u32 count, GPUContext *gpu_context)
     {
         auto *data = acul::alloc_n<Stream>(count);
+        auto *master = acul::alloc<InstanceMasterData<typename Stream::InstanceType>>();
         auto &device = get_agrb_device(gpu_context);
         agrb::managed_buffer buffer{.required_flags = vk::MemoryPropertyFlagBits::eHostVisible |
                                                       vk::MemoryPropertyFlagBits::eHostCoherent,
@@ -291,6 +330,7 @@ namespace auik::detail
                                     .vma_usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
         for (u32 i = 0u; i < count; ++i)
         {
+            data[i].master = master;
             data[i].transforms.init(device, buffer);
             data[i].styles.init(device, buffer);
         }

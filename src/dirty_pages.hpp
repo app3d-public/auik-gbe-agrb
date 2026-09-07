@@ -13,6 +13,12 @@ namespace auik::detail
         u32 page_size = 64u;
     };
 
+    inline u32 next_cache_version(u32 &version)
+    {
+        if (++version == 0u) ++version;
+        return version;
+    }
+
     inline u32 dirty_page_size(size_t element_count)
     {
         const size_t target = amal::max<size_t>((element_count + 15u) / 16u, 64u);
@@ -50,21 +56,24 @@ namespace auik::detail
     }
 
     template <typename T>
-    inline void memcpy_buffer_elements(agrb::vector<T> &dst, const agrb::vector<T> &src, size_t first, size_t count)
+    inline void upload_buffer_elements(agrb::vector<T> &dst, const acul::vector<T> &src, size_t first, size_t count)
     {
         if (count == 0u) return;
         auto &dst_buffer = dst.data();
-        const auto &src_buffer = src.data();
-        assert(dst_buffer.alignment_size == src_buffer.alignment_size);
-        const size_t byte_offset = static_cast<size_t>(src_buffer.alignment_size) * first;
-        const size_t byte_count = static_cast<size_t>(src_buffer.alignment_size) * count;
-        std::memcpy(static_cast<u8 *>(dst_buffer.mapped) + byte_offset,
-                    static_cast<const u8 *>(src_buffer.mapped) + byte_offset, byte_count);
+        const size_t byte_offset = static_cast<size_t>(dst_buffer.alignment_size) * first;
+        if (dst_buffer.alignment_size == sizeof(T))
+        {
+            std::memcpy(static_cast<u8 *>(dst_buffer.mapped) + byte_offset, src.data() + first, sizeof(T) * count);
+            return;
+        }
+        for (size_t i = 0u; i < count; ++i)
+            std::memcpy(static_cast<u8 *>(dst_buffer.mapped) + byte_offset + dst_buffer.alignment_size * i,
+                        src.data() + first + i, sizeof(T));
     }
 
     template <typename T>
-    inline void sync_paged_buffer(agrb::vector<T> &dst, const agrb::vector<T> &src, DirtyPageState &dst_pages,
-                                  const DirtyPageState &src_pages, bool force_full_copy)
+    inline void upload_dirty_pages(agrb::vector<T> &dst, const acul::vector<T> &src, DirtyPageState &dst_pages,
+                                   const DirtyPageState &src_pages, bool force_full_copy)
     {
         const size_t element_count = src.size();
         if (element_count == 0u)
@@ -82,7 +91,7 @@ namespace auik::detail
                 if (dst_pages.versions[page] != src_pages.versions[page]) ++changed_pages;
 
         const size_t page_count = src_pages.versions.size();
-        if (force_full_copy || changed_pages * 2u > page_count) memcpy_buffer_elements(dst, src, 0u, element_count);
+        if (force_full_copy || changed_pages * 2u > page_count) upload_buffer_elements(dst, src, 0u, element_count);
         else
         {
             size_t page = 0u;
@@ -97,7 +106,7 @@ namespace auik::detail
                 while (page < page_count && dst_pages.versions[page] != src_pages.versions[page]) ++page;
                 const size_t first = first_page * src_pages.page_size;
                 const size_t count = amal::min(page * src_pages.page_size, element_count) - first;
-                memcpy_buffer_elements(dst, src, first, count);
+                upload_buffer_elements(dst, src, first, count);
             }
         }
         dst_pages = src_pages;

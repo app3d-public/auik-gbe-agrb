@@ -17,6 +17,7 @@ layout(location = 6) flat in uint in_corner_mask;
 layout(location = 7) flat in uint in_flags;
 layout(location = 8) flat in uint in_clip_id;
 layout(location = 9) in vec2 in_pixel_pos;
+layout(location = 10) flat in uint in_border_mask;
 
 layout(location = 0) out vec4 out_color;
 
@@ -75,9 +76,15 @@ void main()
         if (has_border)
         {
             float thickness = max(in_border_thickness, 0.0);
-            vec2 inner_half = max(half_size - vec2(thickness), vec2(0.0));
-            bool inside_inner = abs(in_local_pos.x) <= inner_half.x && abs(in_local_pos.y) <= inner_half.y;
-            color = inside_inner ? fill_color : in_border_color;
+            bool left = in_local_pos.x <= -half_size.x + thickness;
+            bool top = in_local_pos.y <= -half_size.y + thickness;
+            bool right = in_local_pos.x >= half_size.x - thickness;
+            bool bottom = in_local_pos.y >= half_size.y - thickness;
+            bool border_pixel = (((in_border_mask & 0x1u) != 0u) && left) ||
+                                (((in_border_mask & 0x2u) != 0u) && top) ||
+                                (((in_border_mask & 0x4u) != 0u) && right) ||
+                                (((in_border_mask & 0x8u) != 0u) && bottom);
+            color = border_pixel ? in_border_color : fill_color;
         }
 
         out_color = color;
@@ -120,6 +127,14 @@ void main()
     float fill_inner = 1.0 - smoothstep(0.0, aa_inner, dist_inner);
 
     float border_alpha = in_border_color.a * (1.0 - fill_inner);
+    vec2 edge_distance = half_size - abs(in_local_pos);
+    bool horizontal_edge = edge_distance.x <= edge_distance.y;
+    bool enabled_side = horizontal_edge
+                            ? (in_local_pos.x < 0.0 ? (in_border_mask & 0x1u) != 0u
+                                                   : (in_border_mask & 0x4u) != 0u)
+                            : (in_local_pos.y < 0.0 ? (in_border_mask & 0x2u) != 0u
+                                                   : (in_border_mask & 0x8u) != 0u);
+    if (!enabled_side) border_alpha = 0.0;
     float fill_alpha = fill_color.a * fill_inner;
     float out_alpha = border_alpha + fill_alpha;
     if (out_alpha > 1e-5)

@@ -146,11 +146,16 @@ namespace auik
         {
             auto *ctx = get_agrb_context(gpu_context);
             auto &clip_rects = get_current_clip_rects(ctx);
-            const u32 id = static_cast<u32>(clip_rects.size());
+            const u32 id = static_cast<u32>(ctx->clip_rects_master.size());
             assert(id <= 0xFFFFu && "Clip rect limit exceeded (u16)");
+            ctx->clip_rects_master.push_back(rect);
+            const u32 version = next_cache_version(ctx->clip_rects_master_version);
+            reset_dirty_pages(ctx->clip_rects_master_pages, ctx->clip_rects_master.size(), version);
             const auto result = clip_rects.push_back(rect);
             if (result & agrb::vector_result_flag_bits::buffer_reallocated)
                 mark_clip_rects_reallocated(ctx, get_context().frame_id);
+            ctx->clip_rects_versions[get_context().frame_id] = version;
+            ctx->clip_rects_pages[get_context().frame_id] = ctx->clip_rects_master_pages;
             return static_cast<u16>(id);
         }
 
@@ -158,27 +163,38 @@ namespace auik
         {
             auto *ctx = get_agrb_context(gpu_context);
             auto &clip_rects = get_current_clip_rects(ctx);
+            if (clip_id >= ctx->clip_rects_master.size()) ctx->clip_rects_master.resize(static_cast<u32>(clip_id) + 1u);
             if (clip_id >= clip_rects.size())
             {
                 const auto result = clip_rects.resize(static_cast<u32>(clip_id) + 1u);
                 if (result & agrb::vector_result_flag_bits::buffer_reallocated)
                     mark_clip_rects_reallocated(ctx, get_context().frame_id);
             }
+            if (ctx->clip_rects_master[clip_id] == rect) return;
+            ctx->clip_rects_master[clip_id] = rect;
             clip_rects[clip_id] = rect;
+            const u32 version = next_cache_version(ctx->clip_rects_master_version);
+            mark_dirty_page(ctx->clip_rects_master_pages, ctx->clip_rects_master.size(), clip_id, version);
+            ctx->clip_rects_versions[get_context().frame_id] = version;
+            mark_dirty_page(ctx->clip_rects_pages[get_context().frame_id], clip_rects.size(), clip_id, version);
         }
 
         static void reset_clip_rects(GPUContext *gpu_context)
         {
             auto *ctx = get_agrb_context(gpu_context);
+            if (!ctx->clip_rects_master.empty()) next_cache_version(ctx->clip_rects_master_version);
+            ctx->clip_rects_master.clear();
+            reset_dirty_pages(ctx->clip_rects_master_pages, 0u, ctx->clip_rects_master_version);
             get_current_clip_rects(ctx).clear();
+            ctx->clip_rects_versions[get_context().frame_id] = ctx->clip_rects_master_version;
+            ctx->clip_rects_pages[get_context().frame_id] = ctx->clip_rects_master_pages;
         }
 
         static amal::vec4 *get_clip_rect(GPUContext *gpu_context, u16 clip_id)
         {
             auto *ctx = get_agrb_context(gpu_context);
-            auto &clip_rects = get_current_clip_rects(ctx);
-            if (clip_id >= clip_rects.size()) return nullptr;
-            return &clip_rects[clip_id];
+            if (clip_id >= ctx->clip_rects_master.size()) return nullptr;
+            return &ctx->clip_rects_master[clip_id];
         }
 
         static void copy_clip_rects_frame_impl(GPUContext *gpu_context, u32 dst_frame_id, u32 src_frame_id)
@@ -188,17 +204,22 @@ namespace auik
             const u32 frames = get_context().frames_in_flight;
             if (dst_frame_id >= frames || src_frame_id >= frames || dst_frame_id == src_frame_id) return;
             auto &dst = ctx->clip_rects[dst_frame_id];
-            auto &src = ctx->clip_rects[src_frame_id];
-            const u32 src_size = static_cast<u32>(src.size());
+            const u32 src_size = static_cast<u32>(ctx->clip_rects_master.size());
             if (src_size == 0)
             {
                 dst.clear();
+                ctx->clip_rects_versions[dst_frame_id] = ctx->clip_rects_master_version;
+                ctx->clip_rects_pages[dst_frame_id] = ctx->clip_rects_master_pages;
                 return;
             }
+            const bool size_changed = dst.size() != src_size;
             const auto result = dst.resize(src_size);
             if (result & agrb::vector_result_flag_bits::buffer_reallocated)
                 mark_clip_rects_reallocated(ctx, dst_frame_id);
-            memcpy(dst.data().mapped, src.data().mapped, src_size * sizeof(amal::vec4));
+            if (size_changed || ctx->clip_rects_versions[dst_frame_id] != ctx->clip_rects_master_version)
+                upload_dirty_pages(dst, ctx->clip_rects_master, ctx->clip_rects_pages[dst_frame_id],
+                                   ctx->clip_rects_master_pages, size_changed);
+            ctx->clip_rects_versions[dst_frame_id] = ctx->clip_rects_master_version;
         }
 
         static u32 push_hit_rect_impl(GPUContext *gpu_context, const RectData &rect)
@@ -306,7 +327,7 @@ namespace auik
             void *rgba_pixels = image.pixels;
             if (image.format != rgba8_format || src_channels != 4)
             {
-                rgba_pixels = umbf::utils::convert_image(image, rgba8_format, 4);
+                rgba_pixels = umbf::convert_image(image, rgba8_format, 4);
                 if (!rgba_pixels) return false;
             }
 
@@ -381,6 +402,10 @@ namespace auik
             acul::release(agrb_ctx->clip_rects_reallocated, detail::get_context().frames_in_flight);
             agrb_ctx->clip_rects_reallocated = nullptr;
         }
+        acul::release(agrb_ctx->clip_rects_pages, detail::get_context().frames_in_flight);
+        agrb_ctx->clip_rects_pages = nullptr;
+        acul::release(agrb_ctx->clip_rects_versions);
+        agrb_ctx->clip_rects_versions = nullptr;
         clear_shader_cache(agrb_ctx->device);
         acul::release(agrb_ctx);
     }
@@ -398,6 +423,9 @@ namespace auik
         const u32 frames = detail::get_context().frames_in_flight;
         agrb_ctx->clip_rects = acul::alloc_n<agrb::vector<amal::vec4>>(frames);
         for (u32 i = 0; i < frames; ++i) agrb_ctx->clip_rects[i].init(agrb_ctx->device, clip_buf);
+        agrb_ctx->clip_rects_pages = acul::alloc_n<detail::DirtyPageState>(frames);
+        agrb_ctx->clip_rects_versions = acul::alloc_n<u32>(frames);
+        for (u32 i = 0; i < frames; ++i) agrb_ctx->clip_rects_versions[i] = 0u;
         agrb_ctx->clip_rects_reallocated = acul::alloc_n<bool>(frames);
         for (u32 i = 0; i < frames; ++i) agrb_ctx->clip_rects_reallocated[i] = false;
         agrb_ctx->picker = acul::make_unique<detail::GPUPicker>(agrb_ctx->device);

@@ -60,6 +60,17 @@ namespace auik::detail
             DirtyPageState style_pages;
         };
 
+        struct PickerMasterData
+        {
+            // Keep picker comparisons in cached CPU memory; mapped frame buffers remain write-only.
+            acul::vector<amal::rect> transforms;
+            acul::vector<PickerStyleData> styles;
+            u32 transform_version = 0u;
+            u32 style_version = 0u;
+            DirtyPageState transform_pages;
+            DirtyPageState style_pages;
+        };
+
         agrb::device *_device = nullptr;
         struct PickValue
         {
@@ -72,6 +83,7 @@ namespace auik::detail
         DrawPipeline *_pipeline = nullptr;
         vk::Format _depth_format = vk::Format::eUndefined;
         PickerFrameData *_rects = nullptr;
+        PickerMasterData _master;
         acul::shared_ptr<agrb::descriptor_set_layout> _descriptor_set_layout = nullptr;
         acul::vector<vk::DescriptorSet> _descriptor_sets;
         acul::vector<vk::Buffer> _descriptor_buffer_transforms;

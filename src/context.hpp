@@ -8,6 +8,7 @@
 #include <agrb/vector.hpp>
 #include <amal/vector.hpp>
 #include <auik/detail/gpu_context.hpp>
+#include "dirty_pages.hpp"
 #include "picker/picker.hpp"
 
 namespace auik::detail
@@ -20,7 +21,13 @@ namespace auik::detail
         acul::shared_ptr<agrb::descriptor_set_layout> bindless_texture_layout = nullptr;
         vk::DescriptorSet bindless_texture_set = nullptr;
         acul::vector<vk::DescriptorImageInfo> bindless_textures;
+        // Canonical clip data used by the CPU and uploaded into each frame buffer on demand.
+        acul::vector<amal::vec4> clip_rects_master;
+        DirtyPageState clip_rects_master_pages;
+        u32 clip_rects_master_version = 0u;
         agrb::vector<amal::vec4> *clip_rects = nullptr;
+        DirtyPageState *clip_rects_pages = nullptr;
+        u32 *clip_rects_versions = nullptr;
         bool *clip_rects_reallocated = nullptr;
         acul::unique_ptr<class GPUPicker> picker;
 

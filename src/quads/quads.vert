@@ -25,6 +25,7 @@ layout(location = 6) flat out uint out_corner_mask;
 layout(location = 7) flat out uint out_flags;
 layout(location = 8) flat out uint out_clip_id;
 layout(location = 9) out vec2 out_pixel_pos;
+layout(location = 10) flat out uint out_border_mask;
 
 vec2 get_quad_uv(uint vertex_index)
 {
@@ -55,4 +56,6 @@ void main()
     out_clip_id = style.mask & 0xFFFFu;
     out_corner_mask = style_mask & 0xFu;
     out_flags = style_mask >> 4u;
+    const uint encoded_border_mask = style.mask >> 24u;
+    out_border_mask = (encoded_border_mask & 0x10u) != 0u ? encoded_border_mask & 0xFu : 0xFu;
 }
