@@ -80,3 +80,16 @@ set_target_properties(${PROJECT_NAME}
     PROPERTIES
     CXX_EXTENSIONS YES
 )
+
+option(AUIK_GBE_AGRB_BUILD_TESTS "Build backend cache tests" OFF)
+if(AUIK_GBE_AGRB_BUILD_TESTS)
+    enable_testing()
+    add_executable(auik_picker_cache_test tests/picker_cache.cpp src/picker/picker.cpp)
+    target_include_directories(auik_picker_cache_test PRIVATE "${CMAKE_SOURCE_DIR}/modules/auik/src")
+    target_link_libraries(auik_picker_cache_test PRIVATE auik-gbe-agrb acul amal)
+    target_compile_options(auik_picker_cache_test PRIVATE -UNDEBUG)
+    target_compile_definitions(auik_picker_cache_test PRIVATE
+        "AUIK_SHADERS_OUTPUT_DIR=\"${AUIK_SHADERS_OUTPUT_DIR_CMAKE}\"")
+    add_dependencies(auik_picker_cache_test AUIK_GBE_AGRB_SHADER_HEADER)
+    add_test(NAME auik_picker_cache COMMAND auik_picker_cache_test)
+endif()

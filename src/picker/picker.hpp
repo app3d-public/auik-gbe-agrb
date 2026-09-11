@@ -38,6 +38,15 @@ namespace auik::detail
         void copy_frame_data(u32 dst_frame_id, u32 src_frame_id);
 
     private:
+        friend struct PickerCacheTest;
+        inline bool is_frame_data_synced(u32 frame_id) const
+        {
+            if (!_rects) return true;
+            const auto &frame = _rects[frame_id];
+            return frame.transform_version == _master.transform_version &&
+                   frame.style_version == _master.style_version;
+        }
+        void sync_frame_data(u32 frame_id);
         struct PickerStyleData
         {
             ElementID id{};

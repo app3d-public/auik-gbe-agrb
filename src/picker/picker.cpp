@@ -463,6 +463,7 @@ namespace auik::detail
     u32 GPUPicker::push_hit_rect(const RectData &rect)
     {
         const u32 frame_id = get_context().frame_id;
+        if (!is_frame_data_synced(frame_id)) sync_frame_data(frame_id);
         auto &rects = frame_rects(frame_id);
         const u32 id = static_cast<u32>(_master.transforms.size());
         _master.transforms.push_back(rect.bounds);
@@ -486,9 +487,13 @@ namespace auik::detail
 
     void GPUPicker::update_hit_rect(u32 id, const RectData &rect)
     {
+        if (id >= _master.transforms.size()) return;
         const u32 frame_id = get_context().frame_id;
+        // A frame may lag behind _master even when the incoming value equals it.
+        // Bring its pages up to date before writing an element or advancing page versions.
+        if (!is_frame_data_synced(frame_id)) sync_frame_data(frame_id);
         auto &rects = frame_rects(frame_id);
-        if (id >= _master.transforms.size() || id >= rects.transforms.size()) return;
+        if (id >= rects.transforms.size()) return;
         const amal::rect transform = rect.bounds;
         auto &current_transform = _master.transforms[id];
         if (current_transform.offset != transform.offset || current_transform.size != transform.size)
@@ -534,7 +539,14 @@ namespace auik::detail
 
     void GPUPicker::copy_frame_data(u32 dst_frame_id, u32 src_frame_id)
     {
-        if (dst_frame_id == src_frame_id || !_rects) return;
+        // _master is the source; src_frame_id is only part of the backend dispatch contract.
+        (void)src_frame_id;
+        if (!is_frame_data_synced(dst_frame_id)) sync_frame_data(dst_frame_id);
+    }
+
+    void GPUPicker::sync_frame_data(u32 dst_frame_id)
+    {
+        if (!_rects) return;
         auto &dst = frame_rects(dst_frame_id);
         const u32 count = static_cast<u32>(_master.transforms.size());
         const bool transform_size_changed = dst.transforms.size() != count;
