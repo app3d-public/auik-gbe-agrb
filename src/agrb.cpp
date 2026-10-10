@@ -147,7 +147,7 @@ namespace auik
             auto *ctx = get_agrb_context(gpu_context);
             auto &clip_rects = get_current_clip_rects(ctx);
             const u32 id = static_cast<u32>(ctx->clip_rects_master.size());
-            assert(id <= 0xFFFFu && "Clip rect limit exceeded (u16)");
+            assert(id < 0xFFFFu && "Clip rect limit exceeded (u16)");
             ctx->clip_rects_master.push_back(rect);
             const u32 version = next_cache_version(ctx->clip_rects_master_version);
             reset_dirty_pages(ctx->clip_rects_master_pages, ctx->clip_rects_master.size(), version);
