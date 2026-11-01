@@ -10,6 +10,10 @@
 namespace auik
 {
     AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device, agrb::descriptor_pool *descriptor_pool);
+    // Runtime resource location supplied by the host application, independent of the shader build directory.
+    AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device,
+                                                              agrb::descriptor_pool *descriptor_pool,
+                                                              const acul::path &shader_library_path);
     AUIK_GBE_AGRB_EXPORT TextureID add_agrb_texture(vk::Sampler sampler, vk::ImageView image_view,
                                            vk::ImageLayout image_layout = vk::ImageLayout::eShaderReadOnlyOptimal);
     AUIK_GBE_AGRB_EXPORT bool remove_agrb_texture(vk::ImageView image_view);

@@ -22,11 +22,15 @@ set(AUIK_SHADERS_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 ```
 
 `AUIK_SHADERS_OUTPUT_DIR` is the directory where the generated Auik shader library is written.
-At runtime, the backend loads:
+At runtime, pass the shader library path resolved by the host application:
 
-```text
-${AUIK_SHADERS_OUTPUT_DIR}/auik.umlib
+```cpp
+auik::create_agrb_backend(device, pool, app_dir / "shaders/auik.umlib");
 ```
+
+The two-argument overload uses `shaders/auik.umlib` relative to the working directory.
+The build output directory is not used as a runtime resource path. Unreadable shader
+libraries produce an exception with the path and error code before backend allocation.
 
 Example:
 

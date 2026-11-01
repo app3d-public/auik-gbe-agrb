@@ -388,8 +388,11 @@ namespace auik
     static void destroy_agrb_backend(detail::GPUContext *gpu_context)
     {
         detail::AgrbContext *agrb_ctx = static_cast<detail::AgrbContext *>(gpu_context);
-        agrb_ctx->picker->destroy(agrb_ctx->device);
-        agrb_ctx->picker.reset();
+        if (agrb_ctx->picker)
+        {
+            agrb_ctx->picker->destroy(agrb_ctx->device);
+            agrb_ctx->picker.reset();
+        }
         if (agrb_ctx->clip_rects)
         {
             const u32 frames = detail::get_context().frames_in_flight;
@@ -402,11 +405,14 @@ namespace auik
             acul::release(agrb_ctx->clip_rects_reallocated, detail::get_context().frames_in_flight);
             agrb_ctx->clip_rects_reallocated = nullptr;
         }
-        acul::release(agrb_ctx->clip_rects_pages, detail::get_context().frames_in_flight);
-        agrb_ctx->clip_rects_pages = nullptr;
+        if (agrb_ctx->clip_rects_pages)
+        {
+            acul::release(agrb_ctx->clip_rects_pages, detail::get_context().frames_in_flight);
+            agrb_ctx->clip_rects_pages = nullptr;
+        }
         acul::release(agrb_ctx->clip_rects_versions);
         agrb_ctx->clip_rects_versions = nullptr;
-        clear_shader_cache(agrb_ctx->device);
+        agrb_ctx->shader_cache.reset(agrb_ctx->device);
         acul::release(agrb_ctx);
     }
 
@@ -435,7 +441,22 @@ namespace auik
     AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device,
                                                                  agrb::descriptor_pool *descriptor_pool)
     {
+        return create_agrb_backend(device, descriptor_pool, acul::path("shaders") / "auik.umlib");
+    }
+
+    AUIK_GBE_AGRB_EXPORT detail::GPUContext *create_agrb_backend(agrb::device &device,
+                                                                 agrb::descriptor_pool *descriptor_pool,
+                                                                 const acul::path &shader_library_path)
+    {
+        agrb::shader_cache shaders;
+        const auto result = shaders.load_shader_library(shader_library_path);
+        if (!result.success())
+            throw acul::runtime_error(acul::format("Could not load UI shader library: %s (error 0x%llx)",
+                                                  shader_library_path.str().c_str(),
+                                                  static_cast<unsigned long long>(static_cast<u64>(result))));
         auto *agrb_ctx = acul::alloc<detail::AgrbContext>(device, descriptor_pool);
+        agrb_ctx->shader_cache = std::move(shaders);
+        agrb_ctx->shader_library_path = shader_library_path;
         agrb_ctx->create_resources = &create_agrb_resources;
         agrb_ctx->destroy_context = &destroy_agrb_backend;
         agrb_ctx->push_clip_rect = &detail::push_clip_rect;

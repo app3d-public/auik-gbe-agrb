@@ -8,6 +8,7 @@
 #include <agrb/vector.hpp>
 #include <amal/vector.hpp>
 #include <auik/detail/gpu_context.hpp>
+#include <auik/detail/context.hpp>
 #include "dirty_pages.hpp"
 #include "picker/picker.hpp"
 
@@ -18,6 +19,7 @@ namespace auik::detail
         agrb::device &device;
         agrb::descriptor_pool *descriptor_pool = nullptr;
         agrb::shader_cache shader_cache;
+        acul::path shader_library_path;
         acul::shared_ptr<agrb::descriptor_set_layout> bindless_texture_layout = nullptr;
         vk::DescriptorSet bindless_texture_set = nullptr;
         acul::vector<vk::DescriptorImageInfo> bindless_textures;
@@ -47,7 +49,6 @@ namespace auik::detail
 
     inline const acul::path &get_shader_library_path()
     {
-        static acul::path path = acul::path(AUIK_SHADERS_OUTPUT_DIR) / "auik.umlib";
-        return path;
+        return get_agrb_context(get_context().gpu_ctx)->shader_library_path;
     }
 } // namespace auik::detail

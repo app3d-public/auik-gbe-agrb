@@ -92,4 +92,18 @@ if(AUIK_GBE_AGRB_BUILD_TESTS)
         "AUIK_SHADERS_OUTPUT_DIR=\"${AUIK_SHADERS_OUTPUT_DIR_CMAKE}\"")
     add_dependencies(auik_picker_cache_test AUIK_GBE_AGRB_SHADER_HEADER)
     add_test(NAME auik_picker_cache COMMAND auik_picker_cache_test)
+
+    add_executable(auik_shader_library_test tests/shader_library.cpp)
+    target_link_libraries(auik_shader_library_test PRIVATE auik-gbe-agrb acul)
+    target_compile_options(auik_shader_library_test PRIVATE -UNDEBUG)
+    set(_shader_library_test_dir "${CMAKE_CURRENT_BINARY_DIR}/shader-library-test")
+    file(MAKE_DIRECTORY "${_shader_library_test_dir}")
+    file(WRITE "${_shader_library_test_dir}/broken.umlib" "not an UMBF shader library")
+    add_custom_command(TARGET auik_shader_library_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${AUIK_SHADERS_OUTPUT_DIR}/auik.umlib"
+            "${_shader_library_test_dir}/relocated.umlib")
+    add_test(NAME auik_shader_library COMMAND auik_shader_library_test
+        "${_shader_library_test_dir}/missing.umlib"
+        "${_shader_library_test_dir}/broken.umlib"
+        "${_shader_library_test_dir}/relocated.umlib")
 endif()
