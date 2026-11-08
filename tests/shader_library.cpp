@@ -1,7 +1,7 @@
 #include <auik/gbe/agrb/agrb.hpp>
 #include <auik/detail/gpu_context.hpp>
+#include <acul/io/path.hpp>
 #include <cassert>
-#include <string>
 
 int main(int argc, char **argv)
 {
@@ -16,16 +16,17 @@ int main(int argc, char **argv)
         agrb::device device;
         for (int i = 1; i <= 2; ++i)
         {
+            const acul::path library_path(argv[i]);
             bool rejected = false;
             try
             {
-                auto *backend = auik::create_agrb_backend(device, nullptr, acul::path(argv[i]));
+                auto *backend = auik::create_agrb_backend(device, nullptr, library_path);
                 backend->destroy_context(backend);
             }
             catch (const std::exception &e)
             {
                 rejected = true;
-                assert(std::string(e.what()).find(argv[i]) != std::string::npos);
+                assert(acul::string(e.what()).find(library_path.str()) != acul::string::npos);
             }
             assert(rejected);
         }
