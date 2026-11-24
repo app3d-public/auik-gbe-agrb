@@ -103,7 +103,7 @@ void main()
     if (invert_radius)
     {
         if (dist_outer < 0.0) discard;
-        out_color = vec4(0.0);
+        out_color = in_background_color;
         return;
     }
 
